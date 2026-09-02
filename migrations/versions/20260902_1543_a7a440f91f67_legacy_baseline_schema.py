@@ -1,8 +1,8 @@
-"""final_production_schema
+"""legacy_baseline_schema
 
-Revision ID: f45f58b6aa07
+Revision ID: a7a440f91f67
 Revises: 
-Create Date: 2026-09-02 14:12:23.796764
+Create Date: 2026-09-02 15:43:59.559186
 
 """
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'f45f58b6aa07'
+revision: str = 'a7a440f91f67'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -172,6 +172,7 @@ def upgrade() -> None:
     sa.Column('total_items_count', sa.Integer(), nullable=False),
     sa.Column('accepted_items_count', sa.Integer(), nullable=False),
     sa.Column('failed_items_count', sa.Integer(), nullable=False),
+    sa.Column('estimated_reward_points', sa.Integer(), nullable=False),
     sa.Column('reward_points', sa.Integer(), nullable=False),
     sa.Column('waiting_emby_since', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),

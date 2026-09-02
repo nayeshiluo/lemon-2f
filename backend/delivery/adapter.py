@@ -153,4 +153,11 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
             return False, f"交付执行异常: {str(e)}", ""
 
 def get_delivery_adapter() -> BaseDeliveryAdapter:
-    return LocalDeliveryAdapter()
+    adapter_name = settings.DELIVERY_ADAPTER.lower().strip()
+    if adapter_name == "local":
+        return LocalDeliveryAdapter()
+    
+    # 严格 Fail-Closed：若配置了尚未实现的适配器（如 guangya 或 custom），坚决拒绝静默偷跑本地磁盘！
+    raise NotImplementedError(
+        f"【交付适配器未就绪】配置的 DELIVERY_ADAPTER='{settings.DELIVERY_ADAPTER}' 尚未完全接入。出于生产安全，系统拒绝静默降级为本地落盘！请在 .env 中设置 DELIVERY_ADAPTER=local。"
+    )

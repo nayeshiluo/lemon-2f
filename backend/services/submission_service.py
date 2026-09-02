@@ -136,7 +136,7 @@ class SubmissionService:
 
             expected_reward = settings.MOVIE_UPLOAD_REWARD if canonical_media_type == "movie" else settings.EPISODE_UPLOAD_REWARD
 
-            # 6. 失败重试隔离清理：若复用历史 failed/rejected 任务，彻底清理旧执行态、旧 SubmissionItem 与旧 DownloadJob
+            # 6. 失败重试隔离清理：若复用历史 failed/rejected 任务，彻底清理旧执行态、旧 SubmissionItem 与旧 DownloadJob，并同步更新 tmdb_id 与 media_type
             if existing and existing.status in ["failed", "rejected"]:
                 # 严格通过 PointsLedger 真实流水校验：只要该 submission_item 真正发过币，严禁重置
                 stmt_ledger = select(PointsLedger).where(
@@ -163,6 +163,9 @@ class SubmissionService:
                 existing.status = "pending"
                 existing.user_id = user_id
                 existing.task_id = task.id
+                # 核心修复 P1-3: 同步刷新 tmdb_id 与 canonical_media_type，杜绝重试更换目标影视后的身份错位
+                existing.tmdb_id = tmdb_id
+                existing.media_type = canonical_media_type
                 existing.target_season = season
                 existing.target_episode = episode
                 existing.title = title or task.title

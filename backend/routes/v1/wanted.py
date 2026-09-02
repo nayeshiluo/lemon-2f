@@ -10,6 +10,7 @@ from backend.auth import get_current_user
 from backend.schemas import WantedCreate, WantedResponse
 from backend.repositories.wanted_repo import WantedRepository
 from backend.services.points_service import PointsService
+from backend.services.task_service import TaskService
 
 router = APIRouter(prefix="/wanted", tags=["Wanted / Bounties"])
 
@@ -19,14 +20,17 @@ async def create_wanted_task(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """发布求片悬赏 (真实 Escrow 冻结软妹币)"""
+    """发布求片悬赏 (统一 canonical TMDB identity，真实 Escrow 冻结软妹币)"""
     points_service = PointsService(db)
     wanted_repo = WantedRepository(db)
+    
+    # 核心修复 P0-2: 统一将 anime/variety 规范化为 tv 作为 TMDB identity 存储，保证与投稿结算 100% 对齐
+    canonical_media_type = TaskService.get_canonical_tmdb_type(req.media_type)
 
     wanted = WantedTask(
         creator_id=current_user.id,
         tmdb_id=req.tmdb_id,
-        media_type=req.media_type,
+        media_type=canonical_media_type,
         title=req.title,
         season=req.season,
         episode=req.episode,
