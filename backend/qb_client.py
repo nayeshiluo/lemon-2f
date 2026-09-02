@@ -7,7 +7,7 @@ from backend.config import settings
 logger = logging.getLogger("lemon_2f.qb")
 
 class QBittorrentClient:
-    """qBittorrent Web API 异步客户端"""
+    """qBittorrent Web API 异步客户端 (带自动重连与共享挂载路径强制下发)"""
     def __init__(self, host: str = settings.QB_HOST, username: str = settings.QB_USERNAME, password: str = settings.QB_PASSWORD):
         self.host = host.rstrip("/")
         self.username = username
@@ -46,23 +46,28 @@ class QBittorrentClient:
             return match.group(1).lower()
         return None
 
-    async def add_torrent(self, urls: str, category: str = settings.QB_CATEGORY, save_path: Optional[str] = None) -> bool:
-        """添加磁力链接或种子 URL"""
+    async def add_torrent(
+        self,
+        urls: str,
+        category: str = settings.QB_CATEGORY,
+        save_path: Optional[str] = None
+    ) -> bool:
+        """添加磁力链接，强制下发共享挂载 save_path"""
         await self._ensure_auth()
+        target_save_path = save_path or settings.QB_CONTAINER_DOWNLOAD_PATH
         data = {
             "urls": urls,
             "category": category,
-            "autoTMM": "false"
+            "autoTMM": "false",
+            "savepath": target_save_path
         }
-        if save_path:
-            data["savepath"] = save_path
         
         try:
             async with httpx.AsyncClient(timeout=15.0, cookies=self.cookies) as client:
                 res = await client.post(f"{self.host}/api/v2/torrents/add", data=data)
                 if res.status_code == 200 and "Ok" in res.text:
+                    logger.info(f"Torrent added to qB, forced savepath: {target_save_path}")
                     return True
-                # 重新鉴权尝试
                 if res.status_code == 403:
                     if await self.login():
                         res2 = await client.post(f"{self.host}/api/v2/torrents/add", data=data, cookies=self.cookies)
@@ -86,19 +91,6 @@ class QBittorrentClient:
         except Exception as e:
             logger.error(f"Failed to get torrent info {torrent_hash}: {e}")
             return None
-
-    async def get_torrent_files(self, torrent_hash: str) -> List[Dict[str, Any]]:
-        """获取种子内文件列表"""
-        await self._ensure_auth()
-        try:
-            async with httpx.AsyncClient(timeout=10.0, cookies=self.cookies) as client:
-                res = await client.get(f"{self.host}/api/v2/torrents/files", params={"hash": torrent_hash.lower()})
-                if res.status_code == 200:
-                    return res.json()
-                return []
-        except Exception as e:
-            logger.error(f"Failed to get torrent files {torrent_hash}: {e}")
-            return []
 
     async def delete_torrent(self, torrent_hash: str, delete_files: bool = True) -> bool:
         """删除任务与物理文件"""

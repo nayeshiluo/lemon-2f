@@ -25,7 +25,7 @@ logger = logging.getLogger("lemon_2f.submission_pipeline")
 class SubmissionPipelineService:
     """
     工业级全自动投稿与状态机推进流水线:
-    PENDING -> RESERVED -> DOWNLOADING -> INSPECTING -> DELIVERING -> WAITING_EMBY -> ACCEPTED
+    PENDING -> RESERVED -> DOWNLOADING -> INSPECTING -> DELIVERING -> WAITING_EMBY -> ACCEPTED / PARTIAL / FAILED
     """
 
     def __init__(self, db: AsyncSession):
@@ -38,7 +38,7 @@ class SubmissionPipelineService:
         self.delivery_adapter = get_delivery_adapter()
 
     async def run_state_machine_cycle(self):
-        """执行单次全量状态机巡检与推进 (由后台调度线程周期调用)"""
+        """执行单次全量状态机巡检与推进"""
         active_subs = await self.sub_repo.get_active_submissions()
         for sub in active_subs:
             try:
@@ -57,7 +57,7 @@ class SubmissionPipelineService:
         await self.db.commit()
 
     async def _ensure_task_bound(self, sub: Submission) -> MediaTask:
-        """确保投稿任务主体绑定有效 (并发安全 + 防 Foreign Key Violation)"""
+        """确保投稿任务主体绑定有效"""
         if sub.task_id:
             task = await self.task_repo.get_task_by_id(sub.task_id)
             if task:
@@ -73,7 +73,7 @@ class SubmissionPipelineService:
         return task
 
     async def _handle_pending(self, sub: Submission):
-        """阶段 1: 确保任务主体绑定、提交到 qBittorrent 并创建关联下载作业"""
+        """阶段 1: 确保任务绑定、强制下发 save_path 提交到 qB 并创建下载作业"""
         try:
             await self._ensure_task_bound(sub)
         except Exception as e:
@@ -91,7 +91,12 @@ class SubmissionPipelineService:
 
         info = await qb_client.get_torrent_info(t_hash)
         if not info:
-            added = await qb_client.add_torrent(urls=sub.magnet_uri, category=settings.QB_CATEGORY)
+            # 关键修复：强制显式传入容器共享挂载路径
+            added = await qb_client.add_torrent(
+                urls=sub.magnet_uri,
+                category=settings.QB_CATEGORY,
+                save_path=settings.QB_CONTAINER_DOWNLOAD_PATH
+            )
             if not added:
                 logger.warning(f"qB add_torrent failed for sub #{sub.id}, will retry")
                 return
@@ -109,10 +114,10 @@ class SubmissionPipelineService:
             sub.download_job.last_progress_at = datetime.now(timezone.utc)
 
         sub.status = "downloading"
-        logger.info(f"Submission #{sub.id} -> DOWNLOADING (hash: {t_hash})")
+        logger.info(f"Submission #{sub.id} -> DOWNLOADING (hash: {t_hash}, savepath: {settings.QB_CONTAINER_DOWNLOAD_PATH})")
 
     async def _handle_downloading(self, sub: Submission):
-        """阶段 2: 基于真实时间戳的进度监控与死种熔断"""
+        """阶段 2: 进度监控与死种熔断"""
         if not sub.torrent_hash or not sub.download_job:
             return
 
@@ -149,7 +154,7 @@ class SubmissionPipelineService:
                 sub.error_message = f"死种超时熔断 (已超 {settings.DEAD_TORRENT_TIMEOUT_MINUTES} 分钟无速度)"
                 job.status = "stopped"
                 await qb_client.delete_torrent(sub.torrent_hash, delete_files=True)
-                logger.warning(f"Submission #{sub.id} dead torrent melted after {idle_seconds:.0f}s idle")
+                logger.warning(f"Submission #{sub.id} dead torrent melted")
                 return
 
         if progress >= 100.0 or state in ["uploading", "pausedUP", "completed"]:
@@ -170,7 +175,7 @@ class SubmissionPipelineService:
         video_files = ffprobe_qc.scan_video_files(content_path)
         if not video_files:
             sub.status = "rejected"
-            sub.error_message = "下载完成但未检索到有效主视频文件 (可能全为 sample/trailer)"
+            sub.error_message = "下载完成但未检索到有效主视频文件"
             return
 
         items: List[SubmissionItem] = []
@@ -189,7 +194,7 @@ class SubmissionPipelineService:
                         s_num, e_num = 1, 1
                     else:
                         sub.status = "rejected"
-                        sub.error_message = f"文件 [{os.path.basename(v_path)}] 无法可靠解析集数，已拦截 (REJECTED_NEEDS_EPISODE_MAPPING)"
+                        sub.error_message = f"文件 [{os.path.basename(v_path)}] 无法可靠解析集数，已拦截"
                         return
                 else:
                     s_num = parsed_season or 1
@@ -228,14 +233,15 @@ class SubmissionPipelineService:
             sub.error_message = "所有视频文件均未通过 FFprobe 质检"
             return
 
+        sub.total_items_count = len(items)
         self.db.add_all(items)
         await self.db.flush()
 
         sub.status = "delivering"
-        logger.info(f"Submission #{sub.id} -> DELIVERING ({len(items)} items inspected)")
+        logger.info(f"Submission #{sub.id} -> DELIVERING ({len(items)} items)")
 
     async def _handle_delivering(self, sub: Submission):
-        """阶段 4: 规范化交付落盘 (Hardlink / Copy) 并隔离交付失败条目"""
+        """阶段 4: 规范化交付落盘并标记进入 waiting_emby 的时间戳"""
         stmt = select(SubmissionItem).where(SubmissionItem.submission_id == sub.id)
         res = await self.db.execute(stmt)
         items = res.scalars().all()
@@ -264,35 +270,43 @@ class SubmissionPipelineService:
 
         await self.db.flush()
 
-        # 安全防刷：若所有文件交付均失败，严禁进入 WAITING_EMBY，直接标记 failed
         if success_count == 0:
             sub.status = "failed"
-            sub.error_message = "所有视频文件物理交付落盘均失败，已终止入库流程"
+            sub.error_message = "所有视频文件物理交付落盘均失败"
             return
 
-        # 仅当有成功落盘文件时才触发 Emby 媒体库刷新并进入 WAITING_EMBY
-        await emby_client.refresh_library()
+        # 记录进入 WAITING_EMBY 的初始时间戳
+        sub.waiting_emby_since = datetime.now(timezone.utc)
         sub.status = "waiting_emby"
+
+        await emby_client.refresh_library()
         logger.info(f"Submission #{sub.id} -> WAITING_EMBY ({success_count}/{len(items)} delivered, Emby Refresh Triggered)")
 
     async def _handle_waiting_emby(self, sub: Submission):
-        """阶段 5: 轮询 Emby 真实刮削对账确认 -> 事务转 ACCEPTED -> 二楼币原子结算与精准悬赏兑现"""
+        """阶段 5: Emby 刮削确认、超时熔断与 Partial/Accepted 状态精细化判定"""
         stmt = select(SubmissionItem).where(SubmissionItem.submission_id == sub.id)
         res = await self.db.execute(stmt)
         items = res.scalars().all()
 
-        # 生产环境强制 Fail-Closed 校验
         if settings.APP_ENV == "production" and not settings.EMBY_API_KEY:
             sub.status = "failed"
             sub.error_message = "生产环境未配置 EMBY_API_KEY，出于安全防刷禁止自动发币确认"
             return
 
-        all_delivered_items_confirmed = True
+        now = datetime.now(timezone.utc)
+        since_time = sub.waiting_emby_since or sub.updated_at
+        if since_time and since_time.tzinfo is None:
+            since_time = since_time.replace(tzinfo=timezone.utc)
+        
+        is_timeout = (now - (since_time or now)).total_seconds() > (settings.EMBY_CONFIRM_TIMEOUT_MINUTES * 60)
+
         total_awarded_points = 0
         has_waiting_items = False
 
         for item in items:
-            # 关键防刷：只有物理交付成功且处于 waiting_emby 的条目才允许对账！
+            if item.status == "accepted":
+                continue
+
             if item.status != "waiting_emby" or not item.dest_file:
                 continue
 
@@ -305,7 +319,6 @@ class SubmissionPipelineService:
                 episode=item.episode
             )
 
-            # 仅在非生产 (测试) 且未配置 Key 时放行
             if settings.APP_ENV != "production" and not settings.EMBY_API_KEY:
                 confirmed = True
 
@@ -352,11 +365,28 @@ class SubmissionPipelineService:
                         ref_type="wanted_task",
                         ref_id=str(b.id)
                     )
-            else:
-                all_delivered_items_confirmed = False
+            elif is_timeout:
+                # 超时熔断
+                item.status = "failed"
+                logger.warning(f"Item #{item.id} WAITING_EMBY timeout after {settings.EMBY_CONFIRM_TIMEOUT_MINUTES}m")
 
-        # 若所有 delivered 条目均已 confirmed，且不存在残留 waiting 条目
-        if not has_waiting_items or all_delivered_items_confirmed:
-            sub.status = "accepted"
-            sub.reward_points = total_awarded_points
-            logger.info(f"Submission #{sub.id} -> ACCEPTED & REWARDED (+{total_awarded_points} 🪙)")
+        # 统计最终条目状态分布
+        accepted_cnt = sum(1 for it in items if it.status == "accepted")
+        failed_cnt = sum(1 for it in items if it.status in ["failed", "rejected"])
+        remaining_waiting = sum(1 for it in items if it.status == "waiting_emby")
+
+        sub.accepted_items_count = accepted_cnt
+        sub.failed_items_count = failed_cnt
+        sub.reward_points = total_awarded_points
+
+        if remaining_waiting == 0:
+            if accepted_cnt > 0 and failed_cnt > 0:
+                sub.status = "partial" # 部分入库成功
+                logger.info(f"Submission #{sub.id} -> PARTIAL ({accepted_cnt} accepted, {failed_cnt} failed, +{total_awarded_points} 🪙)")
+            elif accepted_cnt > 0 and failed_cnt == 0:
+                sub.status = "accepted" # 全量入库成功
+                logger.info(f"Submission #{sub.id} -> ALL ACCEPTED (+{total_awarded_points} 🪙)")
+            elif accepted_cnt == 0:
+                sub.status = "failed" # 全量失败/超时
+                sub.error_message = f"Emby 识别确认超时 ({settings.EMBY_CONFIRM_TIMEOUT_MINUTES}分钟未发现)" if is_timeout else "入库失败"
+                logger.info(f"Submission #{sub.id} -> ALL FAILED")

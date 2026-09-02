@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
@@ -7,8 +8,8 @@ from pydantic import Field
 class Settings(BaseSettings):
     # 系统与品牌定义
     APP_NAME: str = "二楼有请 (Lemon 2F)"
-    APP_VERSION: str = "2.3.0"
-    APP_ENV: str = "production" # production / development
+    APP_VERSION: str = "2.4.0"
+    APP_ENV: str = "production" # production / development / testing
     DEBUG: bool = False
     
     SYSTEM_TITLE: str = "二楼有请 · 影视众包入库与二楼币管理系统"
@@ -16,7 +17,7 @@ class Settings(BaseSettings):
     CURRENCY_SYMBOL: str = "🪙"
     
     # 核心安全与鉴权
-    SECRET_KEY: str = Field(default="lemon-2f-secret-key-change-in-production-2026")
+    SECRET_KEY: str = Field(default="")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 7 days
     
@@ -24,11 +25,12 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     
-    # 数据库连接 (生产环境推荐 PostgreSQL, 开发回退 SQLite)
+    # 数据库连接 (生产环境推荐 PostgreSQL)
     DATABASE_URL: str = Field(default="postgresql+asyncpg://postgres:postgres@postgres:5432/lemon_2f")
     
     # Redis 缓存与分布式锁
     REDIS_URL: str = Field(default="redis://redis:6379/0")
+    REQUIRE_REDIS_IN_PROD: bool = True
     
     # Emby 配置
     EMBY_SERVER_URL: str = Field(default="http://localhost:8096")
@@ -46,7 +48,7 @@ class Settings(BaseSettings):
     QB_PASSWORD: str = Field(default="adminadmin")
     QB_CATEGORY: str = "lemon_2f"
     
-    # 路径映射区分：程序内部永远读取 CONTAINER 路径，Docker Compose 负责挂载 HOST 路径
+    # 路径映射区分：程序内部永远读取 CONTAINER 路径
     QB_CONTAINER_DOWNLOAD_PATH: str = Field(default="/downloads/lemon_2f")
     MEDIA_MOVIES_CONTAINER_PATH: str = Field(default="/media/movies")
     MEDIA_TV_CONTAINER_PATH: str = Field(default="/media/tv")
@@ -83,13 +85,25 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # 生产环境安全拦截：严禁使用默认/占位符 SECRET_KEY 裸奔上线
-DEFAULT_INSECURE_KEYS = [
-    "lemon-2f-secret-key-change-in-production-2026",
-    "replace_with_a_secure_random_secret_key_in_production",
-    "change_me",
-    "secret"
+INSECURE_PATTERNS = [
+    r"^$",
+    r"lemon-2f-secret-key",
+    r"generate_a_strong_random_secret",
+    r"replace_with_a_secure_random",
+    r"change_me",
+    r"^secret$",
+    r"^password$"
 ]
-if settings.APP_ENV == "production" and (not settings.SECRET_KEY or settings.SECRET_KEY.strip() in DEFAULT_INSECURE_KEYS):
-    # 开发/CI 测试环境下允许警告，生产运行严格拦截
-    if "pytest" not in sys.modules and os.environ.get("STRICT_PROD_SECURITY") == "1":
-        raise RuntimeError("【生产启动被安全拦截】检测到使用了默认或不安全的 SECRET_KEY！请在 .env 中设置强随机字符串。")
+
+def is_secret_insecure(secret: str) -> bool:
+    if not secret:
+        return True
+    s = secret.strip().lower()
+    for pattern in INSECURE_PATTERNS:
+        if re.search(pattern, s):
+            return True
+    return False
+
+if settings.APP_ENV == "production" and is_secret_insecure(settings.SECRET_KEY):
+    if "pytest" not in sys.modules:
+        raise RuntimeError("【生产启动被安全拦截】检测到 SECRET_KEY 为空或使用了公开示例占位符！请在 .env 中设置强随机字符串。")

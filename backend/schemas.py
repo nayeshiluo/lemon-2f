@@ -60,11 +60,11 @@ class DedupReportResponse(BaseModel):
     status_label: str
     can_submit: bool
     completion_percent: float
-    missing_ranges: List[str] = []
     missing_ranges_formatted: Optional[str] = None
     total_episodes: Optional[int] = None
     accepted_episodes_count: Optional[int] = None
     missing_episodes_count: Optional[int] = None
+    seasons_detail: Optional[Dict[str, Any]] = None
 
 class TaskItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -129,6 +129,9 @@ class SubmissionResponse(BaseModel):
     torrent_hash: Optional[str] = None
     status: str
     error_message: Optional[str] = None
+    total_items_count: int = 0
+    accepted_items_count: int = 0
+    failed_items_count: int = 0
     reward_points: int
     created_at: datetime
     items: List[SubmissionItemResponse] = []

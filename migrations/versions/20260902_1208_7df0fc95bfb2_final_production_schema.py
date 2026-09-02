@@ -1,8 +1,8 @@
-"""production_full_schema
+"""final_production_schema
 
-Revision ID: 20c3902e4dac
+Revision ID: 7df0fc95bfb2
 Revises: 
-Create Date: 2026-09-02 11:54:42.519094
+Create Date: 2026-09-02 12:08:52.885371
 
 """
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '20c3902e4dac'
+revision: str = '7df0fc95bfb2'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -166,7 +166,11 @@ def upgrade() -> None:
     sa.Column('torrent_hash', sa.String(length=64), nullable=True),
     sa.Column('status', sa.String(length=32), nullable=False),
     sa.Column('error_message', sa.Text(), nullable=True),
+    sa.Column('total_items_count', sa.Integer(), nullable=False),
+    sa.Column('accepted_items_count', sa.Integer(), nullable=False),
+    sa.Column('failed_items_count', sa.Integer(), nullable=False),
     sa.Column('reward_points', sa.Integer(), nullable=False),
+    sa.Column('waiting_emby_since', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
     sa.ForeignKeyConstraint(['task_id'], ['media_tasks.id'], ),

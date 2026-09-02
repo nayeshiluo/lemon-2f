@@ -22,14 +22,20 @@ class Submission(Base):
     magnet_uri = Column(Text, nullable=False)
     torrent_hash = Column(String(64), index=True, nullable=True)
     
-    # 工业级状态机:
-    # pending -> reserved -> downloading -> inspecting -> delivering -> waiting_emby -> accepted
-    # 异常态: failed / rejected / cancelled
+    # 状态机: pending -> reserved -> downloading -> inspecting -> delivering -> waiting_emby -> accepted / partial / failed / rejected
     status = Column(String(32), default="pending", index=True, nullable=False)
     error_message = Column(Text, nullable=True)
     
+    # 多集投稿统计
+    total_items_count = Column(Integer, default=0, nullable=False)
+    accepted_items_count = Column(Integer, default=0, nullable=False)
+    failed_items_count = Column(Integer, default=0, nullable=False)
+    
     # 结算二楼币总数
     reward_points = Column(Integer, default=0, nullable=False)
+    
+    # 进入 waiting_emby 的时间戳，用于超时判定
+    waiting_emby_since = Column(DateTime(timezone=True), nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -40,7 +46,7 @@ class Submission(Base):
     download_job = relationship("DownloadJob", back_populates="submission", uselist=False, cascade="all, delete-orphan")
 
 class SubmissionItem(Base):
-    """投稿内具体的单集/单片条目（真正承载质检、入库与数据库防重复约束）"""
+    """投稿内具体的单集/单片条目"""
     __tablename__ = "submission_items"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -80,7 +86,6 @@ class SubmissionItem(Base):
     submission = relationship("Submission", back_populates="items")
     task_item = relationship("TaskItem", back_populates="submission_items")
 
-# 核心防重复：数据库级 Partial Unique Indexes
 # 1. 电影：同一个 Task 只能存在一个 ACCEPTED 状态的条目
 Index(
     "uq_accepted_movie_item",
@@ -117,9 +122,8 @@ class DownloadJob(Base):
     eta_seconds = Column(Integer, default=0)
     downloaded_bytes = Column(BigInteger, default=0)
     
-    # 死种基于真实时间戳判断 (而非单纯依赖 tick)
     last_progress_at = Column(DateTime(timezone=True), server_default=func.now())
-    status = Column(String(32), default="queued", nullable=False) # queued, downloading, completed, stopped, error
+    status = Column(String(32), default="queued", nullable=False)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
