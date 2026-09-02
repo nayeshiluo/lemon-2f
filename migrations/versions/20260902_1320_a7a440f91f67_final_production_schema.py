@@ -1,8 +1,8 @@
 """final_production_schema
 
-Revision ID: c887ce9650c1
+Revision ID: a7a440f91f67
 Revises: 
-Create Date: 2026-09-02 12:18:50.858132
+Create Date: 2026-09-02 13:20:24.051673
 
 """
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'c887ce9650c1'
+revision: str = 'a7a440f91f67'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -162,8 +162,11 @@ def upgrade() -> None:
     sa.Column('media_type', sa.String(length=32), nullable=False),
     sa.Column('title', sa.String(length=255), nullable=False),
     sa.Column('year', sa.Integer(), nullable=True),
+    sa.Column('target_season', sa.Integer(), nullable=True),
+    sa.Column('target_episode', sa.Integer(), nullable=True),
     sa.Column('magnet_uri', sa.Text(), nullable=False),
     sa.Column('torrent_hash', sa.String(length=64), nullable=True),
+    sa.Column('retry_count', sa.Integer(), nullable=False),
     sa.Column('status', sa.String(length=32), nullable=False),
     sa.Column('error_message', sa.Text(), nullable=True),
     sa.Column('total_items_count', sa.Integer(), nullable=False),
@@ -175,8 +178,7 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
     sa.ForeignKeyConstraint(['task_id'], ['media_tasks.id'], ),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('torrent_hash', name='uq_submission_torrent_hash')
+    sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_submissions_id'), 'submissions', ['id'], unique=False)
     op.create_index(op.f('ix_submissions_status'), 'submissions', ['status'], unique=False)
@@ -184,6 +186,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_submissions_tmdb_id'), 'submissions', ['tmdb_id'], unique=False)
     op.create_index(op.f('ix_submissions_torrent_hash'), 'submissions', ['torrent_hash'], unique=False)
     op.create_index(op.f('ix_submissions_user_id'), 'submissions', ['user_id'], unique=False)
+    op.create_index('uq_active_submission_torrent_hash', 'submissions', ['torrent_hash'], unique=True, postgresql_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby', 'accepted', 'partial')"), sqlite_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby', 'accepted', 'partial')"))
     op.create_table('task_items',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('task_id', sa.Integer(), nullable=False),
@@ -233,6 +236,7 @@ def upgrade() -> None:
     sa.Column('season', sa.Integer(), nullable=True),
     sa.Column('episode', sa.Integer(), nullable=True),
     sa.Column('status', sa.String(length=32), nullable=False),
+    sa.Column('error_message', sa.String(length=255), nullable=True),
     sa.Column('source_file', sa.Text(), nullable=True),
     sa.Column('dest_file', sa.Text(), nullable=True),
     sa.Column('file_size', sa.BigInteger(), nullable=True),
@@ -313,6 +317,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_task_items_status'), table_name='task_items')
     op.drop_index(op.f('ix_task_items_id'), table_name='task_items')
     op.drop_table('task_items')
+    op.drop_index('uq_active_submission_torrent_hash', table_name='submissions', postgresql_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby', 'accepted', 'partial')"), sqlite_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby', 'accepted', 'partial')"))
     op.drop_index(op.f('ix_submissions_user_id'), table_name='submissions')
     op.drop_index(op.f('ix_submissions_torrent_hash'), table_name='submissions')
     op.drop_index(op.f('ix_submissions_tmdb_id'), table_name='submissions')

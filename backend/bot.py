@@ -1,8 +1,9 @@
 import os
+import re
 import json
 import logging
 import asyncio
-from typing import Optional
+from typing import Optional, Tuple
 from sqlalchemy import select
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -75,7 +76,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔥 **连签天数**：`{user.sign_in_streak}` 天\n\n"
         f"📌 **常用指令**：\n"
         f"• `/find <片名>` —— TMDB & Emby 穿透查重\n"
-        f"• `/upload <TMDB_ID> <磁力>` —— 提交指定影视入库\n"
+        f"• `/upload <TMDB_ID> [S01E07] <磁力>` —— 提交指定影视/单集入库\n"
         f"• `/sign` —— 每日签到赚二楼币\n"
         f"• `/points` —— 查看二楼币明细\n"
         f"• `/shop` —— 兑换 Emby VIP / 专线特权\n"
@@ -175,7 +176,7 @@ async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if emby_item:
             status_text = "🟢 **Emby 库内已收录**"
         else:
-            status_text = f"🔴 **Emby 缺失** (投稿指令: `/upload {tmdb_id} <磁力>`)"
+            status_text = f"🔴 **Emby 缺失** (投稿: `/upload {tmdb_id} <磁力>` 或 `/upload {tmdb_id} S01E01 <磁力>`)"
 
         msg += (
             f"**{idx}. {title}** ({year}) [{m_type.upper()}]\n"
@@ -186,11 +187,17 @@ async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/upload <TMDB_ID> <磁力链接> 统一调用 SubmissionService"""
+    """/upload <TMDB_ID> [S01E07] <磁力链接> 统一调用 SubmissionService (支持精准单集预占)"""
     if not update.message:
         return
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("💡 请提供 TMDB ID 和磁力链接，格式：`/upload <TMDB_ID> <magnet:...>`\n（可先使用 `/find 片名` 查询 TMDB ID）", parse_mode="Markdown")
+        await update.message.reply_text(
+            "💡 投稿指令格式：\n"
+            "• 电影/全季: `/upload <TMDB_ID> <magnet:...>`\n"
+            "• 指定剧集: `/upload <TMDB_ID> S01E07 <magnet:...>`\n"
+            "（可先使用 `/find 片名` 查询 TMDB ID）",
+            parse_mode="Markdown"
+        )
         return
 
     tmdb_str = context.args[0].strip()
@@ -198,7 +205,21 @@ async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 第一个参数必须为纯数字 TMDB ID，例如：`/upload 1363974 magnet:...`")
         return
     tmdb_id = int(tmdb_str)
-    magnet = context.args[1].strip()
+
+    target_season: Optional[int] = None
+    target_episode: Optional[int] = None
+    magnet: str = ""
+
+    if len(context.args) >= 3:
+        # 形如 /upload 12345 S01E07 magnet:...
+        se_arg = context.args[1].strip()
+        se_match = re.search(r"[Ss](\d{1,2})[Ee](\d{1,4})", se_arg)
+        if se_match:
+            target_season = int(se_match.group(1))
+            target_episode = int(se_match.group(2))
+        magnet = context.args[2].strip()
+    else:
+        magnet = context.args[1].strip()
 
     tg_user = update.effective_user
     if not tg_user:
@@ -215,10 +236,13 @@ async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id=user.id,
                 tmdb_id=tmdb_id,
                 media_type=media_type,
-                magnet_uri=magnet
+                magnet_uri=magnet,
+                season=target_season,
+                episode=target_episode
             )
+            se_info = f" (目标: `S{target_season:02d}E{target_episode:02d}` 已预占锁定)" if (target_season and target_episode) else ""
             await update.message.reply_text(
-                f"✅ **投稿已受理并进入下载队列！**\n\n"
+                f"✅ **投稿已受理并进入下载队列！**{se_info}\n\n"
                 f"🆔 任务编号：`#{sub.id}`\n"
                 f"🎬 作品标题：`{sub.title}`\n"
                 f"🔑 种子 Hash：`{sub.torrent_hash}`\n"
@@ -242,7 +266,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     data = query.data
     if data == "btn_sign":
-        # 触发签到
         from datetime import date, datetime, timezone
         import random
         from sqlalchemy.exc import IntegrityError
@@ -340,7 +363,6 @@ def create_bot_app() -> Optional[Application]:
     app.add_handler(CommandHandler("sign", cmd_sign))
     app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("upload", cmd_upload))
-    # 关键修复：注册 CallbackQueryHandler 处理按钮点击事件
     app.add_handler(CallbackQueryHandler(handle_callback_query))
 
     return app

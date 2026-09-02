@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from fastapi import HTTPException, status
 
 from backend.config import settings
@@ -19,7 +20,7 @@ logger = logging.getLogger("lemon_2f.submission_service")
 
 class SubmissionService:
     """
-    统一投稿业务领域服务 (服务端权威 Emby 穿透防重 + 剧集 TaskItem 预抢占锁 + 种子 Hash 物理防重)
+    统一投稿业务领域服务 (带目标季集持久化、精准预抢占锁、Emby权威查重与重试支持)
     """
 
     def __init__(self, db: AsyncSession):
@@ -44,12 +45,13 @@ class SubmissionService:
         if not t_hash:
             raise ValueError("无效的磁力链接，未检测到有效 info_hash")
 
-        # 1. 种子 Hash 数据库查重
+        # 1. 种子 Hash 活跃状态查重 (允许历史 failed/rejected 任务重新提交重试)
         existing = await self.sub_repo.get_by_torrent_hash(t_hash)
-        if existing and existing.status in ["pending", "downloading", "inspecting", "delivering", "waiting_emby", "accepted"]:
+        active_statuses = ["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"]
+        if existing and existing.status in active_statuses:
             raise ValueError("该种子资源已有人提交处理中或已完成入库，请勿重复提交")
 
-        # 2. Redis 抢占锁保护 (支持精确到单集锁 task:{tmdb_id}:{media_type}:{season}:{episode})
+        # 2. Redis 抢占锁保护 (支持具体到单集锁)
         lock_suffix = f":S{season:02d}E{episode:02d}" if (season and episode) else ""
         lock_key = f"submit_lock:{tmdb_id}:{media_type}{lock_suffix}"
 
@@ -66,37 +68,32 @@ class SubmissionService:
 
             now = datetime.now(timezone.utc)
 
-            # 3. 服务端权威 Emby & 数据库查重校验
+            # 3. 服务端权威 Emby & 数据库查重与预占
             if media_type == "movie":
-                # 检查数据库
                 items = await self.task_repo.get_items_by_task_id(task.id)
                 if any(it.status == "accepted" for it in items):
                     raise ValueError("该电影已在影视库中收录完成，无需重复投稿")
                 
-                # 穿透查询 Emby 实时库 (防绕过前端直接调用 API 刷币)
                 emby_item = await emby_client.find_by_tmdb_id(tmdb_id, "movie")
                 if emby_item:
-                    # 将 TaskItem 同步标记为 accepted
                     for it in items:
                         it.status = "accepted"
                     task.status = "completed"
                     await self.db.commit()
                     raise ValueError("该电影已在 Emby 媒体库中存在，禁止重复投稿")
 
-                # 检查是否有活跃下载中的任务
                 active_subs = await self.sub_repo.get_active_submissions()
                 if any(s.task_id == task.id and s.status in ["downloading", "inspecting", "delivering", "waiting_emby"] for s in active_subs):
                     raise ValueError("该电影已有其他众包成员正在离线下载或入库处理中，请勿重复抢单")
 
             else:
-                # 剧集 / 动漫 / 综艺：单集维度防重与 TaskItem 预抢占
+                # 剧集单集维度防重与预占
                 if season is not None and episode is not None:
                     t_item = await self.task_repo.get_item_by_season_episode(task.id, season, episode)
                     if t_item:
                         if t_item.status == "accepted":
-                            raise ValueError(f"该剧集 S{season:02d}E{episode:02d} 已在媒体库中收录完成，无需重复投稿")
+                            raise ValueError(f"该单集 S{season:02d}E{episode:02d} 已在媒体库中收录完成，无需重复投稿")
                         
-                        # 检查抢占状态
                         if t_item.status == "reserved" and t_item.reserved_until:
                             res_until = t_item.reserved_until
                             if res_until.tzinfo is None:
@@ -104,43 +101,60 @@ class SubmissionService:
                             if res_until > now and t_item.reserved_by != user_id:
                                 raise ValueError(f"该单集 S{season:02d}E{episode:02d} 已被其他众包成员预占锁定，请稍后或选择其他缺集")
 
-                        # 穿透查询 Emby 实时单集
                         in_emby = await emby_client.verify_item_presence(tmdb_id, media_type, season, episode)
                         if in_emby:
                             t_item.status = "accepted"
                             await self.db.commit()
                             raise ValueError(f"该单集 S{season:02d}E{episode:02d} 已在 Emby 库内收录，禁止重复投稿")
 
-                        # 成功预抢占该 TaskItem 锁定 2 小时
+                        # 预占锁定
                         t_item.status = "reserved"
                         t_item.reserved_by = user_id
                         t_item.reserved_until = now + timedelta(minutes=settings.RESERVATION_TTL_MINUTES)
                 else:
-                    # 全剧整包投稿：检查是否全部集数均已收录
                     items = await self.task_repo.get_items_by_task_id(task.id)
                     if items and all(it.status == "accepted" for it in items):
                         raise ValueError("该剧集全集已全部收录完毕，无需重复投稿")
 
-            # 4. 再次在锁内双重检查 Hash，彻底杜绝 TOCTOU 竞态
+            # 4. 锁内二次检查 Hash 活跃态
             existing_locked = await self.sub_repo.get_by_torrent_hash(t_hash)
-            if existing_locked and existing_locked.status in ["pending", "downloading", "inspecting", "delivering", "waiting_emby", "accepted"]:
+            if existing_locked and existing_locked.status in active_statuses:
                 raise ValueError("该种子资源已在并发中被成功受理，请勿重复提交")
 
             reward = settings.MOVIE_UPLOAD_REWARD if media_type == "movie" else settings.EPISODE_UPLOAD_REWARD
 
-            sub = Submission(
-                user_id=user_id,
-                task_id=task.id,
-                tmdb_id=tmdb_id,
-                media_type=media_type,
-                title=title or task.title,
-                year=year or task.year,
-                magnet_uri=magnet,
-                torrent_hash=t_hash,
-                status="pending",
-                reward_points=reward
-            )
-            await self.sub_repo.create(sub)
+            # 5. 若已存在历史 failed/rejected 记录，复用并重置状态；否则创建新 Submission
+            if existing and existing.status in ["failed", "rejected"]:
+                existing.status = "pending"
+                existing.user_id = user_id
+                existing.task_id = task.id
+                existing.target_season = season
+                existing.target_episode = episode
+                existing.title = title or task.title
+                existing.year = year or task.year
+                existing.magnet_uri = magnet
+                existing.retry_count += 1
+                existing.error_message = None
+                existing.reward_points = reward
+                existing.updated_at = now
+                sub = existing
+            else:
+                sub = Submission(
+                    user_id=user_id,
+                    task_id=task.id,
+                    tmdb_id=tmdb_id,
+                    media_type=media_type,
+                    title=title or task.title,
+                    year=year or task.year,
+                    target_season=season,
+                    target_episode=episode,
+                    magnet_uri=magnet,
+                    torrent_hash=t_hash,
+                    status="pending",
+                    reward_points=reward
+                )
+                await self.sub_repo.create(sub)
+
             await self.db.commit()
             await self.db.refresh(sub)
             return sub

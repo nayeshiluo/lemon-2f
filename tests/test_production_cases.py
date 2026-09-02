@@ -32,6 +32,72 @@ async def db_session():
     await engine.dispose()
 
 @pytest.mark.asyncio
+async def test_nested_savepoint_rollback_preserves_prior_accepted_items(db_session: AsyncSession):
+    """
+    验证 P0-3: 针对单项使用 SAVEPOINT (begin_nested) 进行局部事务隔离:
+    多集批次中 E01/E02 正常入库，E03 发生唯一约束冲突，E03 局部回滚为 rejected，但 E01/E02 及其积分总账绝不丢失！
+    """
+    user = User(username="u_savepoint", balance=0)
+    task = MediaTask(tmdb_id=5555, media_type="tv", title="遮天动漫")
+    db_session.add_all([user, task])
+    await db_session.flush()
+
+    # 预先在数据库中插入一个已存在的 S01E03 (用来制造 E03 冲突)
+    existing_sub = Submission(user_id=user.id, task_id=task.id, tmdb_id=5555, media_type="tv", title="遮天", magnet_uri="magnet:?xt=urn:btih:0000000000000000000000000000000000000000", torrent_hash="0000000000000000000000000000000000000000")
+    db_session.add(existing_sub)
+    await db_session.flush()
+    existing_item3 = SubmissionItem(submission_id=existing_sub.id, task_id=task.id, media_type="tv", season=1, episode=3, status="accepted")
+    db_session.add(existing_item3)
+    await db_session.commit()
+
+    # 现在模拟新用户的多集投稿 (包含 E01, E02, E03)
+    new_sub = Submission(user_id=user.id, task_id=task.id, tmdb_id=5555, media_type="tv", title="遮天", magnet_uri="magnet:?xt=urn:btih:2222222222222222222222222222222222222222", torrent_hash="2222222222222222222222222222222222222222")
+    db_session.add(new_sub)
+    await db_session.flush()
+
+    item1 = SubmissionItem(submission_id=new_sub.id, task_id=task.id, media_type="tv", season=1, episode=1, status="waiting_emby", reward_points=20, dest_file="/media/e1.mkv")
+    item2 = SubmissionItem(submission_id=new_sub.id, task_id=task.id, media_type="tv", season=1, episode=2, status="waiting_emby", reward_points=20, dest_file="/media/e2.mkv")
+    item3 = SubmissionItem(submission_id=new_sub.id, task_id=task.id, media_type="tv", season=1, episode=3, status="waiting_emby", reward_points=20, dest_file="/media/e3.mkv")
+    db_session.add_all([item1, item2, item3])
+    await db_session.flush()
+
+    points_service = PointsService(db_session)
+    items = [item1, item2, item3]
+
+    for it in items:
+        collision = False
+        async with db_session.begin_nested():
+            try:
+                it.status = "accepted"
+                await db_session.flush()
+            except IntegrityError:
+                collision = True
+
+        if collision:
+            it.status = "rejected"
+            it.error_message = "DUPLICATE_AFTER_DOWNLOAD"
+        else:
+            await points_service.add_points(
+                user_id=user.id,
+                amount=it.reward_points,
+                event_type="upload_reward",
+                idempotency_key=f"savepoint_reward_{it.id}",
+                description=f"入库 E{it.episode}"
+            )
+
+    await db_session.commit()
+    await db_session.refresh(item1)
+    await db_session.refresh(item2)
+    await db_session.refresh(item3)
+    await db_session.refresh(user)
+
+    # 验证: E01/E02 成功 accepted，E03 局部回滚为 rejected，用户余额正好获得 E01+E02 的 40 币
+    assert item1.status == "accepted"
+    assert item2.status == "accepted"
+    assert item3.status == "rejected"
+    assert user.balance == 40
+
+@pytest.mark.asyncio
 async def test_media_task_tmdb_unique_constraint(db_session: AsyncSession):
     """验证 P0: 同一 TMDB ID + media_type 在并发下绝对无法插入两个重复 MediaTask"""
     task1 = MediaTask(tmdb_id=1363974, media_type="movie", title="电影A")
@@ -47,39 +113,6 @@ async def test_media_task_tmdb_unique_constraint(db_session: AsyncSession):
     task3 = MediaTask(tmdb_id=1363974, media_type="tv", title="剧集A")
     db_session.add(task3)
     await db_session.commit()
-
-@pytest.mark.asyncio
-async def test_submission_torrent_hash_unique_constraint(db_session: AsyncSession):
-    """验证 P0: 数据库级物理拦截重复种子 Hash 提交 (彻底解决 TOCTOU 竞态)"""
-    user = User(username="u_hash", balance=0)
-    task = MediaTask(tmdb_id=999, media_type="movie", title="电影Hash测试")
-    db_session.add_all([user, task])
-    await db_session.flush()
-
-    sub1 = Submission(
-        user_id=user.id,
-        task_id=task.id,
-        tmdb_id=999,
-        media_type="movie",
-        title="电影Hash测试",
-        magnet_uri="magnet:?xt=urn:btih:aaaaabbbbbcccccdddddeeeeefffff1111122222",
-        torrent_hash="aaaaabbbbbcccccdddddeeeeefffff1111122222"
-    )
-    db_session.add(sub1)
-    await db_session.commit()
-
-    sub2 = Submission(
-        user_id=user.id,
-        task_id=task.id,
-        tmdb_id=999,
-        media_type="movie",
-        title="电影Hash测试并发重复",
-        magnet_uri="magnet:?xt=urn:btih:aaaaabbbbbcccccdddddeeeeefffff1111122222",
-        torrent_hash="aaaaabbbbbcccccdddddeeeeefffff1111122222"
-    )
-    db_session.add(sub2)
-    with pytest.raises(IntegrityError):
-        await db_session.commit()
 
 @pytest.mark.asyncio
 async def test_movie_and_episode_unique_constraints(db_session: AsyncSession):
@@ -233,18 +266,15 @@ async def test_skip_conflict_strategy_prevents_unauthorized_rewards(tmp_path):
         conflict_strategy="SKIP"
     )
 
-    # 1. 模拟目标目录已有历史电影文件 (例如 100 字节)
     dest_file = adapter.get_dest_path("movie", "测试电影", 2026, 12345, extension=".mkv")
     os.makedirs(os.path.dirname(dest_file), exist_ok=True)
     with open(dest_file, "wb") as f:
         f.write(b"0" * 100)
 
-    # 2. 模拟某用户提交了另一份不同的源文件
     new_src = downloads_dir / "user_movie.mkv"
     with open(new_src, "wb") as f:
         f.write(b"1" * 200)
 
-    # 3. 执行交付，必须返回 False (交付失败，不可计为本次成果)
     success, msg, path = await adapter.deliver(
         source_file=str(new_src),
         media_type="movie",

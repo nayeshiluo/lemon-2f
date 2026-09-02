@@ -38,6 +38,16 @@ class SubmissionPipelineService:
         self.task_service = TaskService(db)
         self.delivery_adapter = get_delivery_adapter()
 
+    async def _release_reservation(self, sub: Submission):
+        """即时释放该投稿所预占锁定的 TaskItem"""
+        if sub.task_id and sub.target_season is not None and sub.target_episode is not None:
+            t_item = await self.task_repo.get_item_by_season_episode(sub.task_id, sub.target_season, sub.target_episode)
+            if t_item and t_item.status == "reserved" and t_item.reserved_by == sub.user_id:
+                t_item.status = "missing"
+                t_item.reserved_by = None
+                t_item.reserved_until = None
+                logger.info(f"TaskItem S{sub.target_season:02d}E{sub.target_episode:02d} reservation immediately released")
+
     async def run_state_machine_cycle(self):
         """执行单次全量状态机巡检与推进"""
         active_subs = await self.sub_repo.get_active_submissions()
@@ -80,12 +90,14 @@ class SubmissionPipelineService:
         except Exception as e:
             sub.status = "rejected"
             sub.error_message = f"任务元数据初始化失败: {str(e)}"
+            await self._release_reservation(sub)
             return
 
         t_hash = sub.torrent_hash or qb_client.extract_hash_from_magnet(sub.magnet_uri)
         if not t_hash:
             sub.status = "rejected"
             sub.error_message = "无法解析有效 info_hash"
+            await self._release_reservation(sub)
             return
 
         sub.torrent_hash = t_hash
@@ -139,12 +151,12 @@ class SubmissionPipelineService:
         job.save_path = info.get("save_path")
         job.content_path = content_path
 
-        # 致命异常状态即时熔断
         if state in ["error", "missingFiles"]:
             sub.status = "failed"
             sub.error_message = f"qBittorrent 汇报下载致命异常状态: {state}"
             job.status = "error"
             await qb_client.delete_torrent(sub.torrent_hash, delete_files=True)
+            await self._release_reservation(sub)
             logger.error(f"Submission #{sub.id} qB error state [{state}], terminating")
             return
 
@@ -163,6 +175,7 @@ class SubmissionPipelineService:
                 sub.error_message = f"死种超时熔断 (已超 {settings.DEAD_TORRENT_TIMEOUT_MINUTES} 分钟无速度)"
                 job.status = "stopped"
                 await qb_client.delete_torrent(sub.torrent_hash, delete_files=True)
+                await self._release_reservation(sub)
                 logger.warning(f"Submission #{sub.id} dead torrent melted")
                 return
 
@@ -172,22 +185,23 @@ class SubmissionPipelineService:
             logger.info(f"Submission #{sub.id} -> INSPECTING (Download Complete)")
 
     async def _handle_inspecting(self, sub: Submission):
-        """阶段 3: 多视频文件扫描、同集内去重 (选最高画质) 与 FFprobe 结构化质检"""
+        """阶段 3: 多视频文件扫描、预占目标匹配校验与同集择优质检"""
         task = await self._ensure_task_bound(sub)
         job = sub.download_job
         content_path = job.content_path if job else os.path.join(settings.QB_CONTAINER_DOWNLOAD_PATH, sub.title)
         if not content_path or not os.path.exists(content_path):
             sub.status = "failed"
             sub.error_message = f"下载路径不存在: {content_path}"
+            await self._release_reservation(sub)
             return
 
         video_files = ffprobe_qc.scan_video_files(content_path)
         if not video_files:
             sub.status = "rejected"
             sub.error_message = "下载完成但未检索到有效主视频文件"
+            await self._release_reservation(sub)
             return
 
-        # 收集并质检全部视频文件
         candidates_by_episode: Dict[Tuple[Optional[int], Optional[int]], List[Tuple[str, Dict[str, Any]]]] = {}
 
         for v_path in video_files:
@@ -206,6 +220,7 @@ class SubmissionPipelineService:
                     else:
                         sub.status = "rejected"
                         sub.error_message = f"文件 [{os.path.basename(v_path)}] 无法可靠解析集数，已拦截"
+                        await self._release_reservation(sub)
                         return
                 else:
                     key = (parsed_season or 1, parsed_episode)
@@ -217,12 +232,21 @@ class SubmissionPipelineService:
         if not candidates_by_episode:
             sub.status = "rejected"
             sub.error_message = "所有视频文件均未通过 FFprobe 质检"
+            await self._release_reservation(sub)
             return
 
+        # 核心目标验证：若用户在提交时指定了具体目标集，必须确保下载包内存在该目标集
+        if sub.target_season is not None and sub.target_episode is not None:
+            target_key = (sub.target_season, sub.target_episode)
+            if target_key not in candidates_by_episode:
+                sub.status = "rejected"
+                sub.error_message = f"REJECTED_TARGET_MISMATCH: 投稿指定目标为 S{sub.target_season:02d}E{sub.target_episode:02d}，但下载内容未包含该集"
+                await self._release_reservation(sub)
+                logger.warning(f"Submission #{sub.id} target mismatch: expected {target_key}, found {list(candidates_by_episode.keys())}")
+                return
+
         items: List[SubmissionItem] = []
-        # 同集去重：若同一种子内存在多个同一集文件，优先选择体积最大 / 4K 高分辨率文件
         for (s_num, e_num), file_list in candidates_by_episode.items():
-            # 按 is_4k 优先，再按 file_size 降序排序
             file_list.sort(key=lambda x: (x[1].get("is_4k", False), x[1].get("file_size", 0)), reverse=True)
             best_vpath, best_meta = file_list[0]
 
@@ -259,7 +283,7 @@ class SubmissionPipelineService:
         await self.db.flush()
 
         sub.status = "delivering"
-        logger.info(f"Submission #{sub.id} -> DELIVERING ({len(items)} items inspected and deduped)")
+        logger.info(f"Submission #{sub.id} -> DELIVERING ({len(items)} items)")
 
     async def _handle_delivering(self, sub: Submission):
         """阶段 4: 规范化交付落盘并标记进入 waiting_emby 的时间戳"""
@@ -283,6 +307,7 @@ class SubmissionPipelineService:
             )
             if not success:
                 item.status = "failed"
+                item.error_message = msg
                 logger.error(f"Delivery failed for item #{item.id}: {msg}")
             else:
                 item.dest_file = dest_path
@@ -294,6 +319,7 @@ class SubmissionPipelineService:
         if success_count == 0:
             sub.status = "failed"
             sub.error_message = "所有视频文件物理交付落盘均失败"
+            await self._release_reservation(sub)
             return
 
         sub.waiting_emby_since = datetime.now(timezone.utc)
@@ -303,7 +329,7 @@ class SubmissionPipelineService:
         logger.info(f"Submission #{sub.id} -> WAITING_EMBY ({success_count}/{len(items)} delivered, Emby Refresh Triggered)")
 
     async def _handle_waiting_emby(self, sub: Submission):
-        """阶段 5: Emby 刮削确认、超时熔断、并发唯一约束冲突收口与全量累计发币"""
+        """阶段 5: Emby 刮削确认、SAVEPOINT 局部事务回滚防护与全量累计发币"""
         stmt = select(SubmissionItem).where(SubmissionItem.submission_id == sub.id)
         res = await self.db.execute(stmt)
         items = res.scalars().all()
@@ -311,6 +337,7 @@ class SubmissionPipelineService:
         if settings.APP_ENV == "production" and not settings.EMBY_API_KEY:
             sub.status = "failed"
             sub.error_message = "生产环境未配置 EMBY_API_KEY，出于安全防刷禁止自动发币确认"
+            await self._release_reservation(sub)
             return
 
         now = datetime.now(timezone.utc)
@@ -338,21 +365,27 @@ class SubmissionPipelineService:
                 confirmed = True
 
             if confirmed:
-                item.status = "accepted"
-                if item.task_item_id:
-                    t_item = await self.task_repo.db.get(TaskItem, item.task_item_id)
-                    if t_item:
-                        t_item.status = "accepted"
-                        t_item.accepted_submission_item_id = item.id
+                # 关键修复：使用 SAVEPOINT (begin_nested) 隔离单项并发唯一冲突，绝不回滚外层整个 Session！
+                collision_occurred = False
+                async with self.db.begin_nested():
+                    try:
+                        item.status = "accepted"
+                        if item.task_item_id:
+                            t_item = await self.task_repo.db.get(TaskItem, item.task_item_id)
+                            if t_item:
+                                t_item.status = "accepted"
+                                t_item.accepted_submission_item_id = item.id
+                        await self.db.flush()
+                    except IntegrityError:
+                        collision_occurred = True
+                        logger.warning(f"Item #{item.id} duplicate accepted collision, caught via SAVEPOINT")
 
-                try:
-                    await self.db.flush()
-                except IntegrityError:
-                    await self.db.rollback()
+                if collision_occurred:
                     item.status = "rejected"
-                    logger.warning(f"Item #{item.id} duplicate accepted collision, gracefully caught as REJECTED")
+                    item.error_message = "DUPLICATE_AFTER_DOWNLOAD: 该单集已在并发中被其他任务先行入库确认"
                     continue
 
+                # 幂等发放二楼币
                 idempotency_key = f"reward_subitem_{item.id}"
                 await self.points_service.add_points(
                     user_id=sub.user_id,
@@ -365,6 +398,7 @@ class SubmissionPipelineService:
                 )
                 item.is_rewarded = True
 
+                # 精准结算对应悬赏单
                 exact_bounties = await self.wanted_repo.find_exact_bounties(
                     tmdb_id=sub.tmdb_id,
                     media_type=item.media_type,
@@ -387,6 +421,7 @@ class SubmissionPipelineService:
                     )
             elif is_timeout:
                 item.status = "failed"
+                item.error_message = "Emby 识别超时"
                 logger.warning(f"Item #{item.id} WAITING_EMBY timeout after {settings.EMBY_CONFIRM_TIMEOUT_MINUTES}m")
 
         # 准确累计该投稿所有已确认项的奖励总和
@@ -409,4 +444,5 @@ class SubmissionPipelineService:
             elif accepted_cnt == 0:
                 sub.status = "failed"
                 sub.error_message = f"Emby 识别确认超时 ({settings.EMBY_CONFIRM_TIMEOUT_MINUTES}分钟未发现)" if is_timeout else "入库失败"
+                await self._release_reservation(sub)
                 logger.info(f"Submission #{sub.id} -> ALL FAILED")

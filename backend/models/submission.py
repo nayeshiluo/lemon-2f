@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, ForeignKey, 
-    Text, BigInteger, Float, Index, UniqueConstraint, func
+    Text, BigInteger, Float, Index, func
 )
 from sqlalchemy.orm import relationship
 from backend.database import Base
@@ -19,8 +19,13 @@ class Submission(Base):
     title = Column(String(255), nullable=False)
     year = Column(Integer, nullable=True)
     
+    # 核心目标季集持久化：用户预占的指定季集目标
+    target_season = Column(Integer, nullable=True)
+    target_episode = Column(Integer, nullable=True)
+    
     magnet_uri = Column(Text, nullable=False)
     torrent_hash = Column(String(64), index=True, nullable=True)
+    retry_count = Column(Integer, default=0, nullable=False)
     
     # 状态机: pending -> reserved -> downloading -> inspecting -> delivering -> waiting_emby -> accepted / partial / failed / rejected
     status = Column(String(32), default="pending", index=True, nullable=False)
@@ -36,15 +41,19 @@ class Submission(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # 数据库级物理防重：禁止并发插入相同种子 Hash
-    __table_args__ = (
-        UniqueConstraint("torrent_hash", name="uq_submission_torrent_hash"),
-    )
-
     user = relationship("User", back_populates="submissions")
     task = relationship("MediaTask", back_populates="submissions")
     items = relationship("SubmissionItem", back_populates="submission", cascade="all, delete-orphan")
     download_job = relationship("DownloadJob", back_populates="submission", uselist=False, cascade="all, delete-orphan")
+
+# 关键防重与重试设计：仅针对活跃/成功状态的 torrent_hash 建立唯一约束，允许 failed/rejected 历史任务重新投稿重试
+Index(
+    "uq_active_submission_torrent_hash",
+    Submission.torrent_hash,
+    unique=True,
+    postgresql_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"]),
+    sqlite_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"])
+)
 
 class SubmissionItem(Base):
     """投稿内具体的单集/单片条目"""
@@ -61,12 +70,11 @@ class SubmissionItem(Base):
     
     # 条目状态: pending, downloading, inspecting, delivering, waiting_emby, accepted, rejected, failed
     status = Column(String(32), default="pending", index=True, nullable=False)
+    error_message = Column(String(255), nullable=True)
     
-    # 物理路径
     source_file = Column(Text, nullable=True)
     dest_file = Column(Text, nullable=True)
     
-    # 结构化质检元数据
     file_size = Column(BigInteger, default=0)
     duration_seconds = Column(Float, default=0.0)
     width = Column(Integer, default=0)
@@ -77,7 +85,6 @@ class SubmissionItem(Base):
     is_4k = Column(Boolean, default=False)
     raw_qc_json = Column(Text, nullable=True)
     
-    # 单项发币与幂等标记
     reward_points = Column(Integer, default=0)
     is_rewarded = Column(Boolean, default=False)
     
@@ -118,7 +125,7 @@ class DownloadJob(Base):
     save_path = Column(Text, nullable=True)
     content_path = Column(Text, nullable=True)
     
-    progress = Column(Float, default=0.0) # 0.0 - 100.0
+    progress = Column(Float, default=0.0)
     download_speed = Column(BigInteger, default=0)
     eta_seconds = Column(Integer, default=0)
     downloaded_bytes = Column(BigInteger, default=0)
