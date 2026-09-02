@@ -31,12 +31,13 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
         target_role = "admin" if is_admin else "user"
 
         if not user:
+            # 关键修复：初始 balance=0，必须严格由 PointsService 入账
             user = User(
                 username=username,
                 emby_user_id=emby_id,
                 emby_username=username,
                 role=target_role,
-                balance=settings.INITIAL_USER_COINS
+                balance=0
             )
             await user_repo.create(user)
             await points_service.add_points(
@@ -75,13 +76,13 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
             is_whitelisted=user.is_whitelisted
         )
 
-    # 3. 初始体验默认用户
+    # 3. 初始体验默认用户 (开发模式)
     if not user and password == "123456" and settings.APP_ENV != "production":
         user = User(
             username=username,
             password_hash=get_password_hash(password),
             role="owner" if username.lower() == "admin" else "user",
-            balance=settings.INITIAL_USER_COINS
+            balance=0
         )
         await user_repo.create(user)
         await points_service.add_points(

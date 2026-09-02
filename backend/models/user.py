@@ -20,10 +20,10 @@ class User(Base):
     
     # 权限矩阵: owner (最高), admin (管理员), user (普通众包用户)
     role = Column(String(32), default="user", nullable=False)
-    is_whitelisted = Column(Boolean, default=False, nullable=False) # 高权限投稿免审白名单
+    is_whitelisted = Column(Boolean, default=False, nullable=False)
     
-    # 二楼币资产
-    balance = Column(Integer, default=100, nullable=False)
+    # 核心资产：初始余额必须为 0！所有二楼币增减必须严格通过 PointsService/PointsLedger 原子入账
+    balance = Column(Integer, default=0, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     
     sign_in_streak = Column(Integer, default=0, nullable=False)

@@ -26,7 +26,7 @@ class RedisManager:
             self._available = True
             logger.info("Redis connected successfully")
         except Exception as e:
-            logger.warning(f"Redis connection failed ({e}), falling back to local non-distributed mode")
+            logger.warning(f"Redis connection failed: {e}")
             self._available = False
 
     async def close(self):
@@ -39,7 +39,7 @@ class RedisManager:
 
     @asynccontextmanager
     async def lock(self, key: str, timeout_seconds: int = 60):
-        """安全分布式锁：带 Token 与 Lua 释放脚本"""
+        """安全分布式锁：带 Token 与 Lua 释放脚本 (生产模式严格 Fail-Closed，绝不盲目放行)"""
         token = str(uuid.uuid4())
         lock_key = f"lock:{key}"
         acquired = False
@@ -49,16 +49,23 @@ class RedisManager:
                 res = await self.client.set(lock_key, token, ex=timeout_seconds, nx=True)
                 acquired = bool(res)
             except Exception as e:
-                logger.warning(f"Redis lock error: {e}")
-                acquired = True # 降级放行
+                logger.error(f"Redis lock error on key {key}: {e}")
+                # 生产环境若要求 Redis 严格存在，则锁异常时绝对不能放行
+                if settings.APP_ENV == "production" and settings.REQUIRE_REDIS_IN_PROD:
+                    acquired = False
+                else:
+                    acquired = True # 开发环境容错放行
         else:
-            acquired = True # 无 Redis 时降级单机放行
+            if settings.APP_ENV == "production" and settings.REQUIRE_REDIS_IN_PROD:
+                logger.error(f"Redis unavailable in production mode! Refusing lock for {key} (Fail-Closed)")
+                acquired = False
+            else:
+                acquired = True # 开发环境无 Redis 降级单机放行
 
         try:
             yield acquired
         finally:
             if acquired and self.is_available and self.client:
-                # 仅当 token 一致时释放锁，防误删他人锁
                 lua_script = """
                 if redis.call("get", KEYS[1]) == ARGV[1] then
                     return redis.call("del", KEYS[1])

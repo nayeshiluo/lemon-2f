@@ -1,3 +1,4 @@
+import os
 import pytest
 import pytest_asyncio
 from datetime import date, datetime, timezone
@@ -13,7 +14,8 @@ from backend.models.wanted import WantedTask
 from backend.services.points_service import PointsService
 from backend.services.missing_engine import missing_engine
 
-TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+# 支持通过环境变量自动对接 CI 真实 PostgreSQL 服务，无环境变量时回退至 SQLite 内存测试
+TEST_DB_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 @pytest_asyncio.fixture
 async def db_session():
@@ -36,28 +38,59 @@ async def test_media_task_tmdb_unique_constraint(db_session: AsyncSession):
     db_session.add(task1)
     await db_session.commit()
 
-    # 尝试并发插入相同 tmdb_id + movie
     task2 = MediaTask(tmdb_id=1363974, media_type="movie", title="电影A重复")
     db_session.add(task2)
     with pytest.raises(IntegrityError):
         await db_session.commit()
     await db_session.rollback()
 
-    # 允许不同媒体类型 (如 TV 与 Movie 相同 ID)
     task3 = MediaTask(tmdb_id=1363974, media_type="tv", title="剧集A")
     db_session.add(task3)
     await db_session.commit()
 
 @pytest.mark.asyncio
+async def test_submission_torrent_hash_unique_constraint(db_session: AsyncSession):
+    """验证 P0: 数据库级物理拦截重复种子 Hash 提交 (彻底解决 TOCTOU 竞态)"""
+    user = User(username="u_hash", balance=0)
+    task = MediaTask(tmdb_id=999, media_type="movie", title="电影Hash测试")
+    db_session.add_all([user, task])
+    await db_session.flush()
+
+    sub1 = Submission(
+        user_id=user.id,
+        task_id=task.id,
+        tmdb_id=999,
+        media_type="movie",
+        title="电影Hash测试",
+        magnet_uri="magnet:?xt=urn:btih:aaaaabbbbbcccccdddddeeeeefffff1111122222",
+        torrent_hash="aaaaabbbbbcccccdddddeeeeefffff1111122222"
+    )
+    db_session.add(sub1)
+    await db_session.commit()
+
+    sub2 = Submission(
+        user_id=user.id,
+        task_id=task.id,
+        tmdb_id=999,
+        media_type="movie",
+        title="电影Hash测试并发重复",
+        magnet_uri="magnet:?xt=urn:btih:aaaaabbbbbcccccdddddeeeeefffff1111122222",
+        torrent_hash="aaaaabbbbbcccccdddddeeeeefffff1111122222"
+    )
+    db_session.add(sub2)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+
+@pytest.mark.asyncio
 async def test_movie_and_episode_unique_constraints(db_session: AsyncSession):
     """验证 CASE 1 & CASE 2: 电影只能有一个 ACCEPTED，剧集同季同集只能有一个 ACCEPTED"""
-    user = User(username="u1", balance=100)
+    user = User(username="u1", balance=0)
     task_movie = MediaTask(tmdb_id=100, media_type="movie", title="电影A")
     task_tv = MediaTask(tmdb_id=200, media_type="tv", title="剧集B")
     db_session.add_all([user, task_movie, task_tv])
     await db_session.flush()
 
-    sub = Submission(user_id=user.id, tmdb_id=100, media_type="movie", title="电影A", magnet_uri="magnet:?xt=urn:btih:1111111111111111111111111111111111111111")
+    sub = Submission(user_id=user.id, tmdb_id=100, media_type="movie", title="电影A", magnet_uri="magnet:?xt=urn:btih:1111111111111111111111111111111111111111", torrent_hash="1111111111111111111111111111111111111111")
     db_session.add(sub)
     await db_session.flush()
     sub_id = sub.id
@@ -131,8 +164,8 @@ async def test_movie_and_episode_unique_constraints(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_wanted_exact_episode_settlement(db_session: AsyncSession):
     """验证 CASE 4 & 13: 悬赏严格匹配 (E150 上传成功绝不触发 E151/E152 误结算)"""
-    u_creator = User(username="bounty_creator", balance=200)
-    u_worker = User(username="uploader", balance=50)
+    u_creator = User(username="bounty_creator", balance=0)
+    u_worker = User(username="uploader", balance=0)
     db_session.add_all([u_creator, u_worker])
     await db_session.flush()
 
@@ -152,33 +185,44 @@ async def test_wanted_exact_episode_settlement(db_session: AsyncSession):
     assert w151.status == "open"
 
 @pytest.mark.asyncio
-async def test_points_idempotency(db_session: AsyncSession):
-    """验证 CASE 7 & 11: 积分发币强幂等 (重复执行 10 次只能加一次分)"""
-    user = User(username="u_points", balance=100)
+async def test_points_zero_balance_init_and_idempotency(db_session: AsyncSession):
+    """验证 P0-2: 用户初始余额为 0，只有通过 PointsService 入账 100，余额与账本 100% 对齐"""
+    user = User(username="u_exact_ledger", balance=0)
     db_session.add(user)
     await db_session.commit()
 
     points_service = PointsService(db_session)
-    idempotency_key = "reward_sub_item_999"
-
-    for _ in range(10):
-        await points_service.add_points(
-            user_id=user.id,
-            amount=60,
-            event_type="upload_reward",
-            idempotency_key=idempotency_key,
-            description="测试发币"
-        )
+    
+    # 首次加初始币 100
+    await points_service.add_points(
+        user_id=user.id,
+        amount=100,
+        event_type="init",
+        idempotency_key=f"init_user_{user.id}",
+        description="新用户注册赠送"
+    )
     await db_session.commit()
     await db_session.refresh(user)
 
-    assert user.balance == 160
+    # 验证余额正好为 100，杜绝了先 100 再加 100 变成 200 的错账
+    assert user.balance == 100
+
+    # 重复发放命中幂等拦截
+    await points_service.add_points(
+        user_id=user.id,
+        amount=100,
+        event_type="init",
+        idempotency_key=f"init_user_{user.id}",
+        description="新用户注册赠送重复"
+    )
+    await db_session.commit()
+    await db_session.refresh(user)
+    assert user.balance == 100
 
 @pytest.mark.asyncio
 async def test_multi_season_missing_engine():
     """验证 P0: 多季剧集精准缺集计算 (S01 12集缺3-6,8-12; S02 24集缺3-24)"""
     season_defs = {1: 12, 2: 24}
-    # S01 已收录 [1, 2, 7]; S02 已收录 [1, 2]
     accepted_records = [(1, 1), (1, 2), (1, 7), (2, 1), (2, 2)]
 
     res = missing_engine.calculate_multi_season_missing(season_defs, accepted_records)
@@ -187,7 +231,6 @@ async def test_multi_season_missing_engine():
     assert res["missing_count"] == 31
     assert res["completion_percent"] == 13.89
     
-    # 验证格式化输出
     formatted = res["missing_ranges_formatted"]
     assert "S01E03-E06" in formatted
     assert "S01E08-E12" in formatted

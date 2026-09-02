@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, ForeignKey, 
-    Text, BigInteger, Float, Index, func
+    Text, BigInteger, Float, Index, UniqueConstraint, func
 )
 from sqlalchemy.orm import relationship
 from backend.database import Base
@@ -26,19 +26,20 @@ class Submission(Base):
     status = Column(String(32), default="pending", index=True, nullable=False)
     error_message = Column(Text, nullable=True)
     
-    # 多集投稿统计
     total_items_count = Column(Integer, default=0, nullable=False)
     accepted_items_count = Column(Integer, default=0, nullable=False)
     failed_items_count = Column(Integer, default=0, nullable=False)
     
-    # 结算二楼币总数
     reward_points = Column(Integer, default=0, nullable=False)
-    
-    # 进入 waiting_emby 的时间戳，用于超时判定
     waiting_emby_since = Column(DateTime(timezone=True), nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # 数据库级物理防重：禁止并发插入相同种子 Hash
+    __table_args__ = (
+        UniqueConstraint("torrent_hash", name="uq_submission_torrent_hash"),
+    )
 
     user = relationship("User", back_populates="submissions")
     task = relationship("MediaTask", back_populates="submissions")

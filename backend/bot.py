@@ -21,13 +21,12 @@ from backend.clients.tmdb import tmdb_client
 from backend.clients.emby import emby_client
 from backend.qb_client import qb_client
 from backend.services.points_service import PointsService
-from backend.services.task_service import TaskService
-from backend.repositories.submission_repo import SubmissionRepository
+from backend.services.submission_service import SubmissionService
 
 logger = logging.getLogger("lemon_2f.bot")
 
 async def get_or_create_tg_user(tg_id: int, tg_username: Optional[str]) -> User:
-    """根据 Telegram User ID 获取或自动建档用户"""
+    """根据 Telegram User ID 获取或自动建档用户 (初始余额 0 + 严格流水入账)"""
     async with AsyncSessionLocal() as session:
         stmt = select(User).where(User.tg_user_id == tg_id)
         res = await session.execute(stmt)
@@ -38,12 +37,13 @@ async def get_or_create_tg_user(tg_id: int, tg_username: Optional[str]) -> User:
             role = "owner" if is_admin else "user"
             uname = tg_username or f"tg_{tg_id}"
             
+            # 关键修复：初始 balance=0，必须严格由 PointsService 入账
             user = User(
                 username=uname,
                 tg_user_id=tg_id,
                 tg_username=tg_username,
                 role=role,
-                balance=settings.INITIAL_USER_COINS
+                balance=0
             )
             session.add(user)
             await session.flush()
@@ -75,7 +75,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔥 **连签天数**：`{user.sign_in_streak}` 天\n\n"
         f"📌 **常用指令**：\n"
         f"• `/find <片名>` —— TMDB & Emby 穿透查重\n"
-        f"• `/upload <磁力>` —— 提交下载与入库质检\n"
+        f"• `/upload <TMDB_ID> <磁力>` —— 提交指定影视入库\n"
         f"• `/sign` —— 每日签到赚二楼币\n"
         f"• `/points` —— 查看二楼币明细\n"
         f"• `/shop` —— 兑换 Emby VIP / 专线特权\n"
@@ -87,16 +87,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🪙 我的二楼币", callback_data="btn_points")
         ],
         [
-            InlineKeyboardButton("🛍️ 二楼商城", callback_data="btn_shop"),
-            InlineKeyboardButton("📦 投稿状态", callback_data="btn_tasks")
+            InlineKeyboardButton("🛍️ 二楼商城", callback_data="btn_shop")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def cmd_sign(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/sign 签到指令"""
+    """/sign 签到指令 (杜绝双重加币，全量委托 PointsService)"""
     tg_user = update.effective_user
     if not update.message or not tg_user:
         return
@@ -127,6 +125,7 @@ async def cmd_sign(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ 您今天已经签过到了，明天再来哦！")
             return
 
+        # 关键修复：仅由 PointsService 修改 balance，严禁额外执行 db_user.balance += total！
         points_service = PointsService(session)
         await points_service.add_points(
             user_id=db_user.id,
@@ -136,10 +135,10 @@ async def cmd_sign(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description=f"Telegram 签到奖励 (基础 {base} + 连签 {bonus})"
         )
 
-        db_user.balance += total
         db_user.sign_in_streak = streak
         db_user.last_sign_in = datetime.now(timezone.utc)
         await session.commit()
+        await session.refresh(db_user)
 
         msg = (
             f"🎉 **签到成功！**\n\n"
@@ -176,7 +175,7 @@ async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if emby_item:
             status_text = "🟢 **Emby 库内已收录**"
         else:
-            status_text = f"🔴 **Emby 缺失** (可投稿赚取 `{settings.MOVIE_UPLOAD_REWARD if m_type == 'movie' else settings.EPISODE_UPLOAD_REWARD}` 二楼币)"
+            status_text = f"🔴 **Emby 缺失** (投稿指令: `/upload {tmdb_id} <磁力>`)"
 
         msg += (
             f"**{idx}. {title}** ({year}) [{m_type.upper()}]\n"
@@ -187,54 +186,50 @@ async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/upload <磁力链接> 提交任务"""
+    """/upload <TMDB_ID> <磁力链接> 统一调用 SubmissionService"""
     if not update.message:
         return
-    if not context.args:
-        await update.message.reply_text("💡 请提供磁力链接，例如：`/upload magnet:?xt=urn:btih:...`", parse_mode="Markdown")
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("💡 请提供 TMDB ID 和磁力链接，格式：`/upload <TMDB_ID> <magnet:...>`\n（可先使用 `/find 片名` 查询 TMDB ID）", parse_mode="Markdown")
         return
 
-    magnet = context.args[0].strip()
-    t_hash = qb_client.extract_hash_from_magnet(magnet)
-    if not t_hash:
-        await update.message.reply_text("❌ 无效的磁力链接，未检测到有效 info_hash")
+    tmdb_str = context.args[0].strip()
+    if not tmdb_str.isdigit():
+        await update.message.reply_text("❌ 第一个参数必须为纯数字 TMDB ID，例如：`/upload 1363974 magnet:...`")
         return
+    tmdb_id = int(tmdb_str)
+    magnet = context.args[1].strip()
 
     tg_user = update.effective_user
     if not tg_user:
         return
     user = await get_or_create_tg_user(tg_user.id, tg_user.username)
 
+    # 查 TMDB 判定 media_type
+    detail_movie = await tmdb_client.get_details(tmdb_id, "movie")
+    media_type = "movie" if detail_movie else "tv"
+
     async with AsyncSessionLocal() as session:
-        sub_repo = SubmissionRepository(session)
-        existing = await sub_repo.get_by_torrent_hash(t_hash)
-        if existing and existing.status in ["pending", "downloading", "inspecting", "delivering", "waiting_emby", "accepted"]:
-            await update.message.reply_text("⚠️ 该资源已有人提交或已完成入库，请勿重复提交！")
-            return
-
-        sub = Submission(
-            user_id=user.id,
-            tmdb_id=0,
-            media_type="movie",
-            title=f"TG提交_{t_hash[:8]}",
-            magnet_uri=magnet,
-            torrent_hash=t_hash,
-            status="pending",
-            reward_points=settings.MOVIE_UPLOAD_REWARD
-        )
-        await sub_repo.create(sub)
-        await session.commit()
-        await session.refresh(sub)
-
-        await update.message.reply_text(
-            f"✅ **投稿已受理并进入下载队列！**\n\n"
-            f"🆔 任务编号：`#{sub.id}`\n"
-            f"🔑 种子 Hash：`{t_hash}`\n"
-            f"⚙️ 当前状态：`排队下载 (Pending)`\n"
-            f"🎁 预计奖励：`{settings.MOVIE_UPLOAD_REWARD}` 二楼币\n\n"
-            f"系统将在下载完成后自动执行 **FFprobe 质检**与 **规范化落盘入库**，入库成功后二楼币将秒级自动入账！",
-            parse_mode="Markdown"
-        )
+        submission_service = SubmissionService(session)
+        try:
+            sub = await submission_service.create_submission(
+                user_id=user.id,
+                tmdb_id=tmdb_id,
+                media_type=media_type,
+                magnet_uri=magnet
+            )
+            await update.message.reply_text(
+                f"✅ **投稿已受理并进入下载队列！**\n\n"
+                f"🆔 任务编号：`#{sub.id}`\n"
+                f"🎬 作品标题：`{sub.title}`\n"
+                f"🔑 种子 Hash：`{sub.torrent_hash}`\n"
+                f"⚙️ 当前状态：`排队下载 (Pending)`\n"
+                f"🎁 预计奖励：`{sub.reward_points}` 二楼币\n\n"
+                f"系统将在下载完成后自动执行 **FFprobe 质检**与 **规范化落盘入库**，入库成功后二楼币将秒级自动入账！",
+                parse_mode="Markdown"
+            )
+        except ValueError as e:
+            await update.message.reply_text(f"⚠️ 提交被拦截：{str(e)}")
 
 def create_bot_app() -> Optional[Application]:
     """构建 Telegram Bot 应用实例"""
