@@ -1,8 +1,8 @@
 """final_production_schema
 
-Revision ID: a7a440f91f67
+Revision ID: f45f58b6aa07
 Revises: 
-Create Date: 2026-09-02 13:20:24.051673
+Create Date: 2026-09-02 14:12:23.796764
 
 """
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'a7a440f91f67'
+revision: str = 'f45f58b6aa07'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -187,6 +187,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_submissions_torrent_hash'), 'submissions', ['torrent_hash'], unique=False)
     op.create_index(op.f('ix_submissions_user_id'), 'submissions', ['user_id'], unique=False)
     op.create_index('uq_active_submission_torrent_hash', 'submissions', ['torrent_hash'], unique=True, postgresql_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby', 'accepted', 'partial')"), sqlite_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby', 'accepted', 'partial')"))
+    op.create_index('uq_active_target_episode_submission', 'submissions', ['task_id', 'target_season', 'target_episode'], unique=True, postgresql_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby') AND target_season IS NOT NULL AND target_episode IS NOT NULL"), sqlite_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby') AND target_season IS NOT NULL AND target_episode IS NOT NULL"))
     op.create_table('task_items',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('task_id', sa.Integer(), nullable=False),
@@ -317,6 +318,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_task_items_status'), table_name='task_items')
     op.drop_index(op.f('ix_task_items_id'), table_name='task_items')
     op.drop_table('task_items')
+    op.drop_index('uq_active_target_episode_submission', table_name='submissions', postgresql_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby') AND target_season IS NOT NULL AND target_episode IS NOT NULL"), sqlite_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby') AND target_season IS NOT NULL AND target_episode IS NOT NULL"))
     op.drop_index('uq_active_submission_torrent_hash', table_name='submissions', postgresql_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby', 'accepted', 'partial')"), sqlite_where=sa.text("status IN ('pending', 'reserved', 'downloading', 'inspecting', 'delivering', 'waiting_emby', 'accepted', 'partial')"))
     op.drop_index(op.f('ix_submissions_user_id'), table_name='submissions')
     op.drop_index(op.f('ix_submissions_torrent_hash'), table_name='submissions')

@@ -270,7 +270,7 @@
                 <span class="text-xs text-slate-500">TMDB #{{ item.tmdb_id }} · {{ item.year || '未知年份' }}</span>
                 <button @click="openSubmitModal(item)"
                         class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow transition">
-                  查重 & 提交
+                  查重 & 投稿
                 </button>
               </div>
             </div>
@@ -302,6 +302,9 @@
                   <span class="text-base font-bold text-white">{{ sub.title }}</span>
                   <span class="text-xs text-slate-400" v-if="sub.year">({{ sub.year }})</span>
                   <span class="text-[10px] uppercase bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded">{{ sub.media_type }}</span>
+                  <span v-if="sub.target_season && sub.target_episode" class="text-[10px] bg-pink-900/60 text-pink-300 border border-pink-500/40 px-1.5 py-0.5 rounded font-mono">
+                    S{{ String(sub.target_season).padStart(2, '0') }}E{{ String(sub.target_episode).padStart(2, '0') }}
+                  </span>
                 </div>
                 <div class="text-xs text-slate-500 mt-1">任务 ID: #{{ sub.id }} · 提交时间: {{ formatDate(sub.created_at) }}</div>
               </div>
@@ -456,7 +459,7 @@
       </div>
     </div>
 
-    <!-- 投稿模态框 -->
+    <!-- 投稿模态框 (支持指定具体季/集数预占) -->
     <div v-if="showSubmitModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div class="glass-card max-w-lg w-full p-6 rounded-2xl border border-brand-pink/50 shadow-2xl space-y-4">
         <div class="flex items-center justify-between">
@@ -472,6 +475,18 @@
           <div>
             <div class="text-sm font-bold text-white">{{ targetMedia.title }} <span v-if="targetMedia.year" class="text-xs text-slate-400">({{ targetMedia.year }})</span></div>
             <div class="text-xs text-pink-400 mt-0.5">TMDB #{{ targetMedia.tmdb_id }} · 预计奖励: {{ targetMedia.media_type === 'movie' ? 60 : 20 }} 二楼币</div>
+          </div>
+        </div>
+
+        <!-- 剧集目标季集选择 (关键修复 P0-3) -->
+        <div v-if="targetMedia && targetMedia.media_type !== 'movie'" class="grid grid-cols-2 gap-2 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">目标季度 (Season)</label>
+            <input v-model.number="targetSeason" type="number" placeholder="例如: 1" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-pink-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">目标单集 (Episode)</label>
+            <input v-model.number="targetEpisode" type="number" placeholder="例如: 7 (留空为全季)" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-pink-500">
           </div>
         </div>
 
@@ -523,6 +538,8 @@
         const searchQuery = ref('')
         const searchResults = ref([])
         const targetMedia = ref(null)
+        const targetSeason = ref(1)
+        const targetEpisode = ref(null)
         const submitMagnet = ref('')
 
         const stats = ref({ total_users: 0, total_submissions: 0, completed_submissions: 0, total_coins_circulation: 0, disk_info: null })
@@ -639,7 +656,6 @@
             const res = await fetch('/api/submissions/all', { headers: getAuthHeaders() })
             if (res.ok) {
               const data = await res.json()
-              // 关键修复：正确解析分页响应的 items 数组
               publicSubmissions.value = data.items || []
             }
           } catch (e) {}
@@ -648,7 +664,6 @@
         const loadMySubmissions = async () => {
           if (!user.value) return
           try {
-            // 关键修复：调用正确的 /api/submissions/my GET 接口
             const res = await fetch('/api/submissions/my', { headers: getAuthHeaders() })
             if (res.ok) {
               const data = await res.json()
@@ -672,7 +687,6 @@
             const res = await fetch('/api/points/ledger', { headers: getAuthHeaders() })
             if (res.ok) {
               const data = await res.json()
-              // 关键修复：正确解析分页响应的 items 数组
               ledgerList.value = data.items || []
             }
           } catch (e) {}
@@ -702,6 +716,8 @@
             return
           }
           targetMedia.value = item
+          targetSeason.value = 1
+          targetEpisode.value = null
           submitMagnet.value = ''
           showSubmitModal.value = true
         }
@@ -718,6 +734,8 @@
               media_type: targetMedia.value.media_type,
               title: targetMedia.value.title,
               year: targetMedia.value.year,
+              season: targetMedia.value.media_type !== 'movie' ? (targetSeason.value || 1) : null,
+              episode: targetMedia.value.media_type !== 'movie' ? targetEpisode.value : null,
               magnet_uri: submitMagnet.value.trim()
             }
             const res = await fetch('/api/submissions/', {
@@ -842,6 +860,8 @@
           searchQuery,
           searchResults,
           targetMedia,
+          targetSeason,
+          targetEpisode,
           submitMagnet,
           stats,
           publicSubmissions,

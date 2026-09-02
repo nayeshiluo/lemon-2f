@@ -185,7 +185,7 @@ class SubmissionPipelineService:
             logger.info(f"Submission #{sub.id} -> INSPECTING (Download Complete)")
 
     async def _handle_inspecting(self, sub: Submission):
-        """阶段 3: 多视频文件扫描、预占目标匹配校验与同集择优质检"""
+        """阶段 3: 多视频文件扫描、目标单集严格限定与同集择优质检"""
         task = await self._ensure_task_bound(sub)
         job = sub.download_job
         content_path = job.content_path if job else os.path.join(settings.QB_CONTAINER_DOWNLOAD_PATH, sub.title)
@@ -235,7 +235,7 @@ class SubmissionPipelineService:
             await self._release_reservation(sub)
             return
 
-        # 核心目标验证：若用户在提交时指定了具体目标集，必须确保下载包内存在该目标集
+        # 核心修复 P0-1：若用户指定了目标集（如 S01E07），只允许生成并入库该目标单集，绝不允许顺手把整个包其他未预占集数一起入库发币！
         if sub.target_season is not None and sub.target_episode is not None:
             target_key = (sub.target_season, sub.target_episode)
             if target_key not in candidates_by_episode:
@@ -244,6 +244,8 @@ class SubmissionPipelineService:
                 await self._release_reservation(sub)
                 logger.warning(f"Submission #{sub.id} target mismatch: expected {target_key}, found {list(candidates_by_episode.keys())}")
                 return
+            # 严格过滤仅保留目标集
+            candidates_by_episode = {target_key: candidates_by_episode[target_key]}
 
         items: List[SubmissionItem] = []
         for (s_num, e_num), file_list in candidates_by_episode.items():
@@ -365,7 +367,6 @@ class SubmissionPipelineService:
                 confirmed = True
 
             if confirmed:
-                # 关键修复：使用 SAVEPOINT (begin_nested) 隔离单项并发唯一冲突，绝不回滚外层整个 Session！
                 collision_occurred = False
                 async with self.db.begin_nested():
                     try:
@@ -385,7 +386,6 @@ class SubmissionPipelineService:
                     item.error_message = "DUPLICATE_AFTER_DOWNLOAD: 该单集已在并发中被其他任务先行入库确认"
                     continue
 
-                # 幂等发放二楼币
                 idempotency_key = f"reward_subitem_{item.id}"
                 await self.points_service.add_points(
                     user_id=sub.user_id,
@@ -398,7 +398,6 @@ class SubmissionPipelineService:
                 )
                 item.is_rewarded = True
 
-                # 精准结算对应悬赏单
                 exact_bounties = await self.wanted_repo.find_exact_bounties(
                     tmdb_id=sub.tmdb_id,
                     media_type=item.media_type,
@@ -424,7 +423,6 @@ class SubmissionPipelineService:
                 item.error_message = "Emby 识别超时"
                 logger.warning(f"Item #{item.id} WAITING_EMBY timeout after {settings.EMBY_CONFIRM_TIMEOUT_MINUTES}m")
 
-        # 准确累计该投稿所有已确认项的奖励总和
         total_cumulative_points = sum(it.reward_points for it in items if it.status == "accepted" and it.is_rewarded)
         accepted_cnt = sum(1 for it in items if it.status == "accepted")
         failed_cnt = sum(1 for it in items if it.status in ["failed", "rejected"])

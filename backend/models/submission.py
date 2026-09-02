@@ -46,13 +46,24 @@ class Submission(Base):
     items = relationship("SubmissionItem", back_populates="submission", cascade="all, delete-orphan")
     download_job = relationship("DownloadJob", back_populates="submission", uselist=False, cascade="all, delete-orphan")
 
-# 关键防重与重试设计：仅针对活跃/成功状态的 torrent_hash 建立唯一约束，允许 failed/rejected 历史任务重新投稿重试
+# 1. 活跃状态下的种子 Hash 唯一索引 (允许 failed/rejected 重试)
 Index(
     "uq_active_submission_torrent_hash",
     Submission.torrent_hash,
     unique=True,
     postgresql_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"]),
     sqlite_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"])
+)
+
+# 2. 同一目标单集在活跃下载/入库中只能存在一个活跃 Submission (彻底杜绝同用户或跨用户多磁力重复下载同一集)
+Index(
+    "uq_active_target_episode_submission",
+    Submission.task_id,
+    Submission.target_season,
+    Submission.target_episode,
+    unique=True,
+    postgresql_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby"]) & Submission.target_season.is_not(None) & Submission.target_episode.is_not(None),
+    sqlite_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby"]) & Submission.target_season.is_not(None) & Submission.target_episode.is_not(None)
 )
 
 class SubmissionItem(Base):

@@ -2,12 +2,12 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from fastapi import HTTPException, status
 
 from backend.config import settings
 from backend.models.user import User
-from backend.models.submission import Submission
+from backend.models.submission import Submission, SubmissionItem
 from backend.models.task import TaskItem
 from backend.repositories.submission_repo import SubmissionRepository
 from backend.repositories.task_repo import TaskRepository
@@ -20,7 +20,7 @@ logger = logging.getLogger("lemon_2f.submission_service")
 
 class SubmissionService:
     """
-    统一投稿业务领域服务 (带目标季集持久化、精准预抢占锁、Emby权威查重与重试支持)
+    统一投稿业务领域服务 (服务端权威 Emby 穿透防重 + 剧集 TaskItem 预抢占锁 + 种子 Hash 物理防重)
     """
 
     def __init__(self, db: AsyncSession):
@@ -45,14 +45,14 @@ class SubmissionService:
         if not t_hash:
             raise ValueError("无效的磁力链接，未检测到有效 info_hash")
 
-        # 1. 种子 Hash 活跃状态查重 (允许历史 failed/rejected 任务重新提交重试)
+        # 1. 种子 Hash 活跃状态查重
         existing = await self.sub_repo.get_by_torrent_hash(t_hash)
         active_statuses = ["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"]
         if existing and existing.status in active_statuses:
             raise ValueError("该种子资源已有人提交处理中或已完成入库，请勿重复提交")
 
-        # 2. Redis 抢占锁保护 (支持具体到单集锁)
-        lock_suffix = f":S{season:02d}E{episode:02d}" if (season and episode) else ""
+        # 2. Redis 抢占锁保护 (修复 Season 0 特别篇边界: 必须使用 is not None 判断)
+        lock_suffix = f":S{season:02d}E{episode:02d}" if (season is not None and episode is not None) else ""
         lock_key = f"submit_lock:{tmdb_id}:{media_type}{lock_suffix}"
 
         async with redis_manager.lock(lock_key, timeout_seconds=30) as acquired:
@@ -89,6 +89,17 @@ class SubmissionService:
             else:
                 # 剧集单集维度防重与预占
                 if season is not None and episode is not None:
+                    # 检查是否已有活跃 Submission 正在处理这同一个 SxxExx (同用户或跨用户均不可并发多磁力重复下载)
+                    stmt = select(Submission).where(
+                        Submission.task_id == task.id,
+                        Submission.target_season == season,
+                        Submission.target_episode == episode,
+                        Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby"])
+                    )
+                    active_sub_res = await self.db.execute(stmt)
+                    if active_sub_res.scalar_one_or_none():
+                        raise ValueError(f"该单集 S{season:02d}E{episode:02d} 已有活跃下载/入库任务正在处理中，请勿重复抢单")
+
                     t_item = await self.task_repo.get_item_by_season_episode(task.id, season, episode)
                     if t_item:
                         if t_item.status == "accepted":
@@ -123,8 +134,15 @@ class SubmissionService:
 
             reward = settings.MOVIE_UPLOAD_REWARD if media_type == "movie" else settings.EPISODE_UPLOAD_REWARD
 
-            # 5. 若已存在历史 failed/rejected 记录，复用并重置状态；否则创建新 Submission
+            # 5. 失败重试隔离清理：若复用历史 failed/rejected 任务，彻底清理旧执行态与旧 SubmissionItem
             if existing and existing.status in ["failed", "rejected"]:
+                # 安全校验：已真正结算过奖励的禁止通过此路径重置
+                if existing.reward_points > 0:
+                    raise ValueError("该任务已有部分或全部发币历史，禁止直接重置，请发起新投稿")
+
+                # 彻底物理删除旧 SubmissionItem
+                await self.db.execute(delete(SubmissionItem).where(SubmissionItem.submission_id == existing.id))
+                
                 existing.status = "pending"
                 existing.user_id = user_id
                 existing.task_id = task.id
@@ -135,7 +153,11 @@ class SubmissionService:
                 existing.magnet_uri = magnet
                 existing.retry_count += 1
                 existing.error_message = None
-                existing.reward_points = reward
+                existing.total_items_count = 0
+                existing.accepted_items_count = 0
+                existing.failed_items_count = 0
+                existing.reward_points = 0
+                existing.waiting_emby_since = None
                 existing.updated_at = now
                 sub = existing
             else:
