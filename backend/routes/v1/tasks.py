@@ -1,16 +1,52 @@
+import os
+import shutil
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 from backend.database import get_db
 from backend.models.user import User
 from backend.models.task import MediaTask
+from backend.models.submission import Submission
 from backend.auth import get_current_user
 from backend.clients.tmdb import tmdb_client
 from backend.services.task_service import TaskService
 from backend.repositories.task_repo import TaskRepository
 from backend.schemas import DedupReportResponse, MediaTaskResponse, PaginatedResponse
+from backend.config import settings
 
 router = APIRouter(prefix="/tasks", tags=["Tasks & Dedup"])
+
+@router.get("/public-stats")
+async def get_public_stats(db: AsyncSession = Depends(get_db)):
+    """公开仪表盘统计数据 (无需登录)"""
+    user_count_res = await db.execute(select(func.count(User.id)))
+    total_users = user_count_res.scalar() or 0
+
+    sub_count_res = await db.execute(select(func.count(Submission.id)))
+    total_subs = sub_count_res.scalar() or 0
+
+    completed_subs_res = await db.execute(select(func.count(Submission.id)).where(Submission.status.in_(["accepted", "partial"])))
+    completed_subs = completed_subs_res.scalar() or 0
+
+    coins_res = await db.execute(select(func.sum(User.balance)))
+    total_coins = coins_res.scalar() or 0
+
+    media_path = settings.MEDIA_MOVIES_CONTAINER_PATH if os.path.exists(settings.MEDIA_MOVIES_CONTAINER_PATH) else "/"
+    total_d, used_d, free_d = shutil.disk_usage(media_path)
+
+    return {
+        "total_users": total_users,
+        "total_submissions": total_subs,
+        "completed_submissions": completed_subs,
+        "total_coins_circulation": total_coins,
+        "disk_info": {
+            "total_gb": round(total_d / (1024**3), 2),
+            "used_gb": round(used_d / (1024**3), 2),
+            "free_gb": round(free_d / (1024**3), 2),
+            "free_percent": round((free_d / total_d) * 100, 1)
+        }
+    }
 
 @router.get("/search-candidates")
 async def search_candidates(
@@ -45,7 +81,7 @@ async def list_tasks(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """众包任务中心列表 (支持按电影/剧集/动漫/综艺、地区、状态分页筛选)"""
+    """众包任务中心列表"""
     task_repo = TaskRepository(db)
     offset = (page - 1) * page_size
     tasks, total = await task_repo.list_tasks(

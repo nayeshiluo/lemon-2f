@@ -1,3 +1,4 @@
+import os
 import logging
 import httpx
 from typing import Optional, Dict, Any, List
@@ -6,7 +7,7 @@ from backend.config import settings
 logger = logging.getLogger("lemon_2f.emby")
 
 class EmbyClient:
-    """Emby Server API 客户端 (鉴权、查重、季集列表、库刷新、最终刮削对账确认)"""
+    """Emby Server API 客户端 (鉴权、查重、季集列表、库刷新、最终物理文件对账确认)"""
 
     def __init__(self, server_url: str = settings.EMBY_SERVER_URL, api_key: str = settings.EMBY_API_KEY):
         self.server_url = server_url.rstrip("/")
@@ -82,7 +83,7 @@ class EmbyClient:
             return []
 
         url = f"{self.server_url}/emby/Shows/{series_id}/Episodes"
-        params = {"Fields": "IndexNumber,ParentIndexNumber,Name,Path,ProviderIds"}
+        params = {"Fields": "IndexNumber,ParentIndexNumber,Name,Path,MediaSources,ProviderIds"}
         if season_number is not None:
             params["Season"] = str(season_number)
 
@@ -101,21 +102,30 @@ class EmbyClient:
         tmdb_id: int,
         media_type: str,
         season: Optional[int] = None,
-        episode: Optional[int] = None
+        episode: Optional[int] = None,
+        expected_dest_path: Optional[str] = None
     ) -> bool:
         """
-        Emby 最终对账确认 (WAITING_EMBY 状态轮询判定核心):
-        - 电影: 确认 ProviderIds.Tmdb == tmdb_id
-        - 剧集: 确认 Series TMDB 匹配 且 ParentIndexNumber == season 且 IndexNumber == episode
+        Emby 最终对账确认 (带物理文件路径匹配校验):
+        确认不仅在库中存在同 TMDB/SxxExx，且物理文件 Path 匹配本次交付目标路径！
         """
         emby_item = await self.find_by_tmdb_id(tmdb_id, media_type)
         if not emby_item:
             return False
 
         if media_type == "movie":
+            if expected_dest_path:
+                emby_path = emby_item.get("Path", "")
+                if not emby_path:
+                    sources = emby_item.get("MediaSources", [])
+                    if sources:
+                        emby_path = sources[0].get("Path", "")
+                # 校验文件名基准名一致
+                if emby_path and os.path.basename(emby_path) != os.path.basename(expected_dest_path):
+                    logger.warning(f"Emby movie path mismatch: found {emby_path}, expected {expected_dest_path}")
+                    return False
             return True
         else:
-            # 剧集精确单集比对
             series_id = emby_item.get("Id")
             if not series_id:
                 return False
@@ -124,6 +134,15 @@ class EmbyClient:
                 s_num = ep.get("ParentIndexNumber")
                 e_num = ep.get("IndexNumber")
                 if (season is None or s_num == season) and e_num == episode:
+                    if expected_dest_path:
+                        emby_path = ep.get("Path", "")
+                        if not emby_path:
+                            sources = ep.get("MediaSources", [])
+                            if sources:
+                                emby_path = sources[0].get("Path", "")
+                        if emby_path and os.path.basename(emby_path) != os.path.basename(expected_dest_path):
+                            logger.warning(f"Emby episode path mismatch: found {emby_path}, expected {expected_dest_path}")
+                            return False
                     return True
             return False
 

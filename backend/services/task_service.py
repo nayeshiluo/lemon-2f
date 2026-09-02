@@ -25,16 +25,14 @@ class TaskService:
         creator_id: Optional[int] = None
     ) -> MediaTask:
         """
-        根据 TMDB 权威刮削创建或获取任务主体 (并发安全 + 严禁在 TMDB 失败时伪造假元数据)
+        根据 TMDB 权威刮削创建或获取任务主体 (并发安全 + 支持 Season 0 特别篇)
         """
         existing = await self.task_repo.get_task_by_tmdb(tmdb_id, media_type)
         if existing:
             return existing
 
-        # 从 TMDB 抓取权威详情
         detail = await tmdb_client.get_details(tmdb_id, media_type)
         if not detail:
-            # 生产环境安全原则：TMDB 请求失败严禁假借单集继续，直接报错熔断
             raise ValueError(f"无法从 TMDB 获取 ID #{tmdb_id} ({media_type}) 的权威元数据，操作已拦截")
 
         total_items = detail.get("number_of_episodes", 1) if media_type != "movie" else 1
@@ -55,14 +53,13 @@ class TaskService:
         try:
             task = await self.task_repo.create_task(task)
         except IntegrityError:
-            # 并发竞争场景：已有并发线程刚插入了同名 Task，回滚后直接读取既有 Task
             await self.db.rollback()
             existing = await self.task_repo.get_task_by_tmdb(tmdb_id, media_type)
             if existing:
                 return existing
             raise
 
-        # 批量生成 TaskItems
+        # 批量生成 TaskItems (完整支持 Season 0 Special 季)
         items: List[TaskItem] = []
         if media_type == "movie":
             items.append(TaskItem(task_id=task.id, season=None, episode=None, status="missing"))
@@ -71,8 +68,6 @@ class TaskService:
             if seasons:
                 for s in seasons:
                     s_num = s.get("season_number", 1)
-                    if s_num == 0:
-                        continue # 跳过 Special 花絮季
                     ep_count = s.get("episode_count", 0)
                     for ep in range(1, ep_count + 1):
                         items.append(TaskItem(task_id=task.id, season=s_num, episode=ep, status="missing"))
@@ -93,7 +88,6 @@ class TaskService:
         task = await self.get_or_create_task_from_tmdb(tmdb_id, media_type)
         items = await self.task_repo.get_items_by_task_id(task.id)
 
-        # 查 Emby 当前实时收录状态
         emby_item = await emby_client.find_by_tmdb_id(tmdb_id, media_type)
         in_emby = emby_item is not None
 
@@ -114,25 +108,21 @@ class TaskService:
                 "missing_ranges": [] if is_accepted else ["全片缺失"]
             }
         else:
-            # 多季剧集精确对账
-            # 1. 构建季定义字典: season_num -> ep_count
             season_defs: Dict[int, int] = {}
             for it in items:
-                s = it.season or 1
+                s = it.season if it.season is not None else 1
                 season_defs[s] = max(season_defs.get(s, 0), it.episode or 1)
 
-            # 2. 收集所有已收录的 (season, episode)
             accepted_tuples: List[Tuple[int, int]] = [
-                (it.season or 1, it.episode)
+                (it.season if it.season is not None else 1, it.episode)
                 for it in items
                 if it.status == "accepted" and it.episode is not None
             ]
 
-            # 3. 合并 Emby 库内实时查询到的单集
             if in_emby:
                 emby_eps = await emby_client.get_series_episodes(str(emby_item.get("Id")))
                 for ep in emby_eps:
-                    s_idx = ep.get("ParentIndexNumber") or 1
+                    s_idx = ep.get("ParentIndexNumber") if ep.get("ParentIndexNumber") is not None else 1
                     e_idx = ep.get("IndexNumber")
                     if e_idx and (s_idx, e_idx) not in accepted_tuples:
                         accepted_tuples.append((s_idx, e_idx))

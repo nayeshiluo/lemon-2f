@@ -1,14 +1,15 @@
 import os
 import sys
 import re
-from typing import List, Optional
+import shutil
+from typing import List, Optional, Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 class Settings(BaseSettings):
     # 系统与品牌定义
     APP_NAME: str = "二楼有请 (Lemon 2F)"
-    APP_VERSION: str = "2.4.0"
+    APP_VERSION: str = "2.5.0"
     APP_ENV: str = "production" # production / development / testing
     DEBUG: bool = False
     
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     
-    # 数据库连接 (生产环境推荐 PostgreSQL)
+    # 数据库连接
     DATABASE_URL: str = Field(default="postgresql+asyncpg://postgres:postgres@postgres:5432/lemon_2f")
     
     # Redis 缓存与分布式锁
@@ -48,23 +49,23 @@ class Settings(BaseSettings):
     QB_PASSWORD: str = Field(default="adminadmin")
     QB_CATEGORY: str = "lemon_2f"
     
-    # 路径映射区分：程序内部永远读取 CONTAINER 路径
+    # 容器内部挂载路径
     QB_CONTAINER_DOWNLOAD_PATH: str = Field(default="/downloads/lemon_2f")
     MEDIA_MOVIES_CONTAINER_PATH: str = Field(default="/media/movies")
     MEDIA_TV_CONTAINER_PATH: str = Field(default="/media/tv")
     
-    # 交付适配器模式 (local / guangya / custom)
+    # 交付适配器模式
     DELIVERY_ADAPTER: str = "local"
-    DELIVERY_MODE: str = "hardlink" # hardlink / copy / move
-    FILE_CONFLICT_STRATEGY: str = "SKIP" # SKIP / REPLACE / KEEP_BOTH
+    DELIVERY_MODE: str = "hardlink"
+    FILE_CONFLICT_STRATEGY: str = "SKIP"
     
     # 质检与风控
     MIN_VIDEO_DURATION_SECONDS: int = 30
-    MIN_DISK_FREE_PERCENT: float = 10.0
+    MIN_DISK_FREE_PERCENT: float = 10.0 # 磁盘最低可用水位熔断 (10%)
     DEAD_TORRENT_TIMEOUT_MINUTES: int = 15
     RESERVATION_TTL_MINUTES: int = 120
     
-    # 二楼币经济系统规则
+    # 软妹币经济系统分值规则
     INITIAL_USER_COINS: int = 100
     SIGN_IN_MIN_COINS: int = 5
     SIGN_IN_MAX_COINS: int = 20
@@ -84,7 +85,6 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# 生产环境安全拦截：严禁使用默认/占位符 SECRET_KEY 裸奔上线
 INSECURE_PATTERNS = [
     r"^$",
     r"lemon-2f-secret-key",

@@ -19,7 +19,7 @@ class Submission(Base):
     title = Column(String(255), nullable=False)
     year = Column(Integer, nullable=True)
     
-    # 核心目标季集持久化：用户预占的指定季集目标
+    # 核心目标季集持久化
     target_season = Column(Integer, nullable=True)
     target_episode = Column(Integer, nullable=True)
     
@@ -35,7 +35,10 @@ class Submission(Base):
     accepted_items_count = Column(Integer, default=0, nullable=False)
     failed_items_count = Column(Integer, default=0, nullable=False)
     
-    reward_points = Column(Integer, default=0, nullable=False)
+    # 预估奖励 vs 真实已结算发币
+    estimated_reward_points = Column(Integer, default=0, nullable=False)
+    reward_points = Column(Integer, default=0, nullable=False) # 初始严格为 0，只有 accepted 且实际发币后才累加
+    
     waiting_emby_since = Column(DateTime(timezone=True), nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -55,7 +58,7 @@ Index(
     sqlite_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"])
 )
 
-# 2. 同一目标单集在活跃下载/入库中只能存在一个活跃 Submission (彻底杜绝同用户或跨用户多磁力重复下载同一集)
+# 2. 同一目标单集在活跃状态下只能存在一个活跃 Submission
 Index(
     "uq_active_target_episode_submission",
     Submission.task_id,

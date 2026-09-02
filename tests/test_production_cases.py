@@ -8,12 +8,13 @@ from sqlalchemy.exc import IntegrityError
 from backend.database import Base
 from backend.models.user import User
 from backend.models.task import MediaTask, TaskItem
-from backend.models.submission import Submission, SubmissionItem
+from backend.models.submission import Submission, SubmissionItem, DownloadJob
 from backend.models.ledger import PointsLedger, SignInRecord
 from backend.models.wanted import WantedTask
 from backend.services.points_service import PointsService
 from backend.services.missing_engine import missing_engine
 from backend.delivery.adapter import LocalDeliveryAdapter
+from backend.schemas import PublicSubmissionResponse
 
 TEST_DB_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
@@ -32,17 +33,86 @@ async def db_session():
     await engine.dispose()
 
 @pytest.mark.asyncio
+async def test_duplicate_active_episode_submission_blocked_at_database_level(db_session: AsyncSession):
+    """验证 P0-4: 数据库级物理拦截同一目标单集的多个活跃下载任务 (同用户或跨用户多磁力)"""
+    user = User(username="u_active_ep", balance=0)
+    task = MediaTask(tmdb_id=12345, media_type="tv", title="庆余年")
+    db_session.add_all([user, task])
+    await db_session.flush()
+
+    # 1. 插入第一个正在下载 S01E07 的 Submission
+    sub1 = Submission(
+        user_id=user.id,
+        task_id=task.id,
+        tmdb_id=12345,
+        media_type="tv",
+        title="庆余年",
+        target_season=1,
+        target_episode=7,
+        magnet_uri="magnet:?xt=urn:btih:1111111111111111111111111111111111111111",
+        torrent_hash="1111111111111111111111111111111111111111",
+        status="downloading"
+    )
+    db_session.add(sub1)
+    await db_session.commit()
+
+    # 2. 尝试并发插入同一 S01E07 的第二个不同磁力活跃任务 (必须被数据库物理拦截)
+    sub2 = Submission(
+        user_id=user.id,
+        task_id=task.id,
+        tmdb_id=12345,
+        media_type="tv",
+        title="庆余年",
+        target_season=1,
+        target_episode=7,
+        magnet_uri="magnet:?xt=urn:btih:2222222222222222222222222222222222222222",
+        torrent_hash="2222222222222222222222222222222222222222",
+        status="pending"
+    )
+    db_session.add(sub2)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+@pytest.mark.asyncio
+async def test_public_all_submissions_desensitization(db_session: AsyncSession):
+    """验证 P0-3: 全站公共投稿流对普通用户严格脱敏，严禁泄露 magnet_uri 与 torrent_hash"""
+    user = User(username="u_secret_magnet", balance=0)
+    task = MediaTask(tmdb_id=8888, media_type="movie", title="私密影视")
+    db_session.add_all([user, task])
+    await db_session.flush()
+
+    sub = Submission(
+        user_id=user.id,
+        task_id=task.id,
+        tmdb_id=8888,
+        media_type="movie",
+        title="私密影视",
+        magnet_uri="magnet:?xt=urn:btih:secretmagneturi1234567890abcdef123456",
+        torrent_hash="secretmagneturi1234567890abcdef123456",
+        status="accepted",
+        reward_points=60
+    )
+    db_session.add(sub)
+    await db_session.commit()
+
+    # 序列化为公共响应模型
+    public_res = PublicSubmissionResponse.model_validate(sub)
+    data_dict = public_res.model_dump()
+
+    assert "magnet_uri" not in data_dict
+    assert "torrent_hash" not in data_dict
+    assert data_dict["title"] == "私密影视"
+    assert data_dict["reward_points"] == 60
+
+@pytest.mark.asyncio
 async def test_nested_savepoint_rollback_preserves_prior_accepted_items(db_session: AsyncSession):
-    """
-    验证 P0-3: 针对单项使用 SAVEPOINT (begin_nested) 进行局部事务隔离:
-    多集批次中 E01/E02 正常入库，E03 发生唯一约束冲突，E03 局部回滚为 rejected，但 E01/E02 及其积分总账绝不丢失！
-    """
+    """验证 P0-3: 针对单项使用 SAVEPOINT 局部事务隔离，E03 冲突局部回滚，E01/E02 保持提交"""
     user = User(username="u_savepoint", balance=0)
     task = MediaTask(tmdb_id=5555, media_type="tv", title="遮天动漫")
     db_session.add_all([user, task])
     await db_session.flush()
 
-    # 预先在数据库中插入一个已存在的 S01E03 (用来制造 E03 冲突)
     existing_sub = Submission(user_id=user.id, task_id=task.id, tmdb_id=5555, media_type="tv", title="遮天", magnet_uri="magnet:?xt=urn:btih:0000000000000000000000000000000000000000", torrent_hash="0000000000000000000000000000000000000000")
     db_session.add(existing_sub)
     await db_session.flush()
@@ -50,7 +120,6 @@ async def test_nested_savepoint_rollback_preserves_prior_accepted_items(db_sessi
     db_session.add(existing_item3)
     await db_session.commit()
 
-    # 现在模拟新用户的多集投稿 (包含 E01, E02, E03)
     new_sub = Submission(user_id=user.id, task_id=task.id, tmdb_id=5555, media_type="tv", title="遮天", magnet_uri="magnet:?xt=urn:btih:2222222222222222222222222222222222222222", torrent_hash="2222222222222222222222222222222222222222")
     db_session.add(new_sub)
     await db_session.flush()
@@ -91,7 +160,6 @@ async def test_nested_savepoint_rollback_preserves_prior_accepted_items(db_sessi
     await db_session.refresh(item3)
     await db_session.refresh(user)
 
-    # 验证: E01/E02 成功 accepted，E03 局部回滚为 rejected，用户余额正好获得 E01+E02 的 40 币
     assert item1.status == "accepted"
     assert item2.status == "accepted"
     assert item3.status == "rejected"
@@ -130,7 +198,6 @@ async def test_movie_and_episode_unique_constraints(db_session: AsyncSession):
     m_task_id = task_movie.id
     tv_task_id = task_tv.id
 
-    # 1. 插入第一条电影 accepted
     item1 = SubmissionItem(
         submission_id=sub_id,
         task_id=m_task_id,
@@ -142,7 +209,6 @@ async def test_movie_and_episode_unique_constraints(db_session: AsyncSession):
     db_session.add(item1)
     await db_session.commit()
 
-    # 2. 尝试插入第二条相同电影 accepted (必须抛出唯一约束冲突)
     item2 = SubmissionItem(
         submission_id=sub_id,
         task_id=m_task_id,
@@ -156,7 +222,6 @@ async def test_movie_and_episode_unique_constraints(db_session: AsyncSession):
         await db_session.commit()
     await db_session.rollback()
 
-    # 3. 剧集单集防重验证: S01E07 插入第一条 accepted 成功
     tv_item1 = SubmissionItem(
         submission_id=sub_id,
         task_id=tv_task_id,
@@ -168,7 +233,6 @@ async def test_movie_and_episode_unique_constraints(db_session: AsyncSession):
     db_session.add(tv_item1)
     await db_session.commit()
 
-    # 4. 插入第二条相同的 S01E07 accepted (必须抛出唯一约束冲突)
     tv_item2 = SubmissionItem(
         submission_id=sub_id,
         task_id=tv_task_id,
@@ -182,7 +246,6 @@ async def test_movie_and_episode_unique_constraints(db_session: AsyncSession):
         await db_session.commit()
     await db_session.rollback()
 
-    # 5. 插入不同的 S01E08 accepted (必须成功)
     tv_item3 = SubmissionItem(
         submission_id=sub_id,
         task_id=tv_task_id,
@@ -226,7 +289,6 @@ async def test_points_zero_balance_init_and_idempotency(db_session: AsyncSession
 
     points_service = PointsService(db_session)
     
-    # 首次加初始币 100
     await points_service.add_points(
         user_id=user.id,
         amount=100,
@@ -239,7 +301,6 @@ async def test_points_zero_balance_init_and_idempotency(db_session: AsyncSession
 
     assert user.balance == 100
 
-    # 重复发放命中幂等拦截
     await points_service.add_points(
         user_id=user.id,
         amount=100,

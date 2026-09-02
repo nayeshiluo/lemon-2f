@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database import get_db
 from backend.models.user import User
 from backend.auth import get_current_user
-from backend.schemas import SubmissionCreate, SubmissionResponse
+from backend.schemas import SubmissionCreate, SubmissionResponse, PublicSubmissionResponse
 from backend.repositories.submission_repo import SubmissionRepository
 from backend.services.submission_service import SubmissionService
 
@@ -43,14 +43,17 @@ async def list_my_submissions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """获取当前用户的投稿列表"""
+    """获取当前用户本人的投稿列表 (包含物理链路详细信息)"""
     sub_repo = SubmissionRepository(db)
     offset = (page - 1) * page_size
     subs, total = await sub_repo.list_user_submissions(current_user.id, offset=offset, limit=page_size)
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
 
+    # 序列化为用户详细模型
+    items = [SubmissionResponse.model_validate(s) for s in subs]
+
     return {
-        "items": subs,
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -64,14 +67,17 @@ async def list_all_submissions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """全站公共投稿流"""
+    """全站公共投稿流 (核心安全脱敏：严禁泄露 magnet_uri, torrent_hash 及内部路径)"""
     sub_repo = SubmissionRepository(db)
     offset = (page - 1) * page_size
     subs, total = await sub_repo.list_all_submissions(offset=offset, limit=page_size)
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
 
+    # 强制脱敏序列化
+    public_items = [PublicSubmissionResponse.model_validate(s) for s in subs]
+
     return {
-        "items": subs,
+        "items": public_items,
         "total": total,
         "page": page,
         "page_size": page_size,

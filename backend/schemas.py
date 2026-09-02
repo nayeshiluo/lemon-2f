@@ -1,5 +1,5 @@
-from typing import Optional, List, Any, Dict
-from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List, Any, Dict, Literal
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from datetime import datetime, date
 
 # --- 通用响应格式 ---
@@ -95,14 +95,22 @@ class MediaTaskResponse(BaseModel):
 
 # --- 投稿相关 ---
 class SubmissionCreate(BaseModel):
-    tmdb_id: int
-    media_type: str # movie / tv / anime / variety
+    tmdb_id: int = Field(gt=0, description="TMDB 唯一标识 ID")
+    media_type: Literal["movie", "tv", "anime", "variety"] = Field(description="媒体类型")
     title: Optional[str] = None
     year: Optional[int] = None
-    magnet_uri: str
+    magnet_uri: str = Field(min_length=10, description="磁力链接 Magnet URI")
     task_id: Optional[int] = None
-    season: Optional[int] = None    # 剧集支持指定具体目标季
-    episode: Optional[int] = None   # 剧集支持指定具体目标集
+    season: Optional[int] = Field(default=None, ge=0, le=100, description="目标季度 (S0 为特别篇)")
+    episode: Optional[int] = Field(default=None, ge=1, le=2000, description="目标集数")
+
+    @model_validator(mode="after")
+    def validate_episodic_targets(self):
+        # 严格校验：剧集/动漫/综艺在 MVP 上线阶段必须指定具体目标季集 (杜绝假全包模式绕过预占防重)
+        if self.media_type != "movie":
+            if self.season is None or self.episode is None:
+                raise ValueError("剧集/动漫/综艺投稿必须明确指定目标季度 (season>=0) 与单集序号 (episode>=1)")
+        return self
 
 class SubmissionItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -119,6 +127,7 @@ class SubmissionItemResponse(BaseModel):
     is_rewarded: bool
 
 class SubmissionResponse(BaseModel):
+    """用户本人 / 管理员查看的详细投稿响应 (包含磁力与物理链路信息)"""
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -128,15 +137,35 @@ class SubmissionResponse(BaseModel):
     media_type: str
     title: str
     year: Optional[int] = None
+    target_season: Optional[int] = None
+    target_episode: Optional[int] = None
     torrent_hash: Optional[str] = None
     status: str
     error_message: Optional[str] = None
     total_items_count: int = 0
     accepted_items_count: int = 0
     failed_items_count: int = 0
-    reward_points: int
+    estimated_reward_points: int = 0
+    reward_points: int = 0
     created_at: datetime
     items: List[SubmissionItemResponse] = []
+
+class PublicSubmissionResponse(BaseModel):
+    """全站公共动态响应 (脱敏保护：严禁返回 magnet_uri, torrent_hash, dest_file 及内部错误堆栈)"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tmdb_id: int
+    media_type: str
+    title: str
+    year: Optional[int] = None
+    target_season: Optional[int] = None
+    target_episode: Optional[int] = None
+    status: str
+    total_items_count: int = 0
+    accepted_items_count: int = 0
+    reward_points: int = 0
+    created_at: datetime
 
 # --- 积分与签到 ---
 class PointsLedgerResponse(BaseModel):
@@ -159,12 +188,12 @@ class SignInResponse(BaseModel):
 
 # --- 悬赏 ---
 class WantedCreate(BaseModel):
-    tmdb_id: int
-    media_type: str = "tv"
+    tmdb_id: int = Field(gt=0)
+    media_type: Literal["movie", "tv", "anime", "variety"] = "tv"
     title: str
     year: Optional[int] = None
-    season: Optional[int] = 1
-    episode: Optional[int] = 1
+    season: Optional[int] = Field(default=1, ge=0)
+    episode: Optional[int] = Field(default=1, ge=1)
     bounty_points: int = Field(default=50, ge=10, le=1000)
 
 class WantedResponse(BaseModel):
@@ -189,10 +218,10 @@ class ShopItemResponse(BaseModel):
     title: str
     description: Optional[str] = None
     category: str
-    cost_points: int
+    cost_points: int = Field(ge=0)
     stock: int
     fulfillment_type: str
     is_active: bool
 
 class ShopExchangeRequest(BaseModel):
-    item_id: int
+    item_id: int = Field(gt=0)
