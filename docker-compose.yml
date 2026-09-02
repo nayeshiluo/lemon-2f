@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  lemon-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lemon-emos-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./downloads:/downloads
+      - ./media:/media
+    depends_on:
+      - lemon-redis
+
+  lemon-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: lemon-emos-frontend
+    restart: unless-stopped
+    ports:
+      - "8888:80"
+    depends_on:
+      - lemon-backend
+
+  lemon-redis:
+    image: redis:7-alpine
+    container_name: lemon-emos-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  downloads:
+  media:
