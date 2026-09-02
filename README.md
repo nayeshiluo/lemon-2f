@@ -68,8 +68,8 @@
 
 ### 1. 克隆仓库
 ```bash
-git clone https://github.com/nayeshiluo/lemon-emos.git
-cd lemon-emos
+git clone https://github.com/nayeshiluo/lemon-2f.git
+cd lemon-2f
 ```
 
 ### 2. 配置环境变量
