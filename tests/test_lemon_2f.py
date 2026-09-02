@@ -43,7 +43,7 @@ async def test_user_and_points_ledger(db_session: AsyncSession):
     assert user.balance == 100
     assert verify_password("password123", user.password_hash)
 
-    # 2. 扣除 30 二楼币
+    # 2. 扣除 30 软妹币
     user.balance -= 30
     ledger1 = PointsLedger(
         user_id=user.id,
@@ -55,7 +55,7 @@ async def test_user_and_points_ledger(db_session: AsyncSession):
     )
     db_session.add(ledger1)
 
-    # 3. 增加 60 二楼币
+    # 3. 增加 60 软妹币
     user.balance += 60
     ledger2 = PointsLedger(
         user_id=user.id,

@@ -12,7 +12,7 @@ async def test_app_import_and_health():
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
-        assert data["currency"] == "二楼币"
+        assert data["currency"] == "软妹币"
 
 @pytest.mark.asyncio
 async def test_readiness_check_probe():

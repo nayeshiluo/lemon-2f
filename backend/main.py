@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.SYSTEM_TITLE,
     version=settings.APP_VERSION,
-    description="二楼有请 · 基于 Emby 原生生态的众包入库、质检、二楼币经济与自动化管理系统",
+    description="二楼有请 · 基于 Emby 原生生态的众包入库、质检、软妹币经济与自动化管理系统",
     lifespan=lifespan
 )
 

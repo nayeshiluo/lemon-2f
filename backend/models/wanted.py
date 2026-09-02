@@ -22,7 +22,7 @@ class WantedTask(Base):
     season = Column(Integer, nullable=True)
     episode = Column(Integer, nullable=True)
     
-    # 悬赏二楼币 (发布时必须真实 Escrow 冻结/扣除)
+    # 悬赏软妹币 (发布时必须真实 Escrow 冻结/扣除)
     bounty_points = Column(Integer, default=50, nullable=False)
     
     # 状态: open (悬赏中), claimed (已认领), completed (已完成结算), cancelled (已取消退款)

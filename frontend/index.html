@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>二楼有请 · 影视众包入库与二楼币管理系统</title>
+  <title>二楼有请 · 影视众包入库与软妹币管理系统</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Vue 3 CDN -->
@@ -102,11 +102,11 @@
         <!-- 用户信息与操作 -->
         <div class="flex items-center space-x-3">
           <template v-if="user">
-            <!-- 二楼币资产胶囊 -->
+            <!-- 软妹币资产胶囊 -->
             <div class="flex items-center space-x-2 bg-gradient-to-r from-purple-950/60 to-slate-900 px-3 py-1.5 rounded-full border border-purple-500/30">
               <span class="text-base">🪙</span>
               <span class="text-sm font-bold text-yellow-400">{{ user.balance }}</span>
-              <span class="text-xs text-purple-300">二楼币</span>
+              <span class="text-xs text-purple-300">软妹币</span>
             </div>
 
             <!-- 签到按钮 -->
@@ -127,7 +127,7 @@
                 <span v-if="user.role !== 'user'" class="text-[10px] bg-pink-500/20 border border-pink-500/40 text-pink-400 px-1 rounded uppercase font-mono">{{ user.role }}</span>
               </div>
               <div class="absolute right-0 mt-1 w-44 bg-brand-card border border-brand-border rounded-xl shadow-2xl py-1 hidden group-hover:block z-50">
-                <a @click.prevent="currentTab = 'ledger'" class="block px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 hover:text-white cursor-pointer">📜 二楼币明细</a>
+                <a @click.prevent="currentTab = 'ledger'" class="block px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 hover:text-white cursor-pointer">📜 软妹币明细</a>
                 <a @click.prevent="currentTab = 'submissions'" class="block px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 hover:text-white cursor-pointer">📦 我的投稿</a>
                 <div class="border-t border-slate-800 my-1"></div>
                 <a @click.prevent="logout" class="block px-4 py-2 text-xs text-red-400 hover:bg-slate-800 cursor-pointer">🚪 退出登录</a>
@@ -155,13 +155,13 @@
           <div class="relative z-10 max-w-2xl space-y-4">
             <div class="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-pink-500/10 border border-pink-500/30 text-pink-400 text-xs font-semibold">
               <span>✨</span>
-              <span>Emby 媒体生态 · 众包入库与二楼币经济</span>
+              <span>Emby 媒体生态 · 众包入库与软妹币经济</span>
             </div>
             <h1 class="text-3xl sm:text-4xl font-black text-white tracking-tight">
               欢迎来到 <span class="neon-text-pink">二楼有请</span>
             </h1>
             <p class="text-slate-300 text-sm leading-relaxed">
-              全自动 TMDB 权威查重、qB 离线挂载调度、FFprobe 深度质检防假视频，一键规范化挂载入库，投稿即发 <span class="text-yellow-400 font-bold">二楼币</span>，畅享 VIP 专线与特权权益！
+              全自动 TMDB 权威查重、qB 离线挂载调度、FFprobe 深度质检防假视频，一键规范化挂载入库，投稿即发 <span class="text-yellow-400 font-bold">软妹币</span>，畅享 VIP 专线与特权权益！
             </p>
             <div class="pt-2 flex flex-wrap gap-3">
               <button @click="currentTab = 'dedup'" class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-sm font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-pink-600/30 transition flex items-center space-x-2">
@@ -182,7 +182,7 @@
         <!-- 核心统计概览 -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div class="glass-card p-5 rounded-xl space-y-1">
-            <span class="text-xs text-slate-400 font-medium">🪙 二楼币流通总量</span>
+            <span class="text-xs text-slate-400 font-medium">🪙 软妹币流通总量</span>
             <div class="text-2xl font-black text-yellow-400">{{ stats.total_coins_circulation || 0 }} <span class="text-xs font-normal text-slate-400">币</span></div>
           </div>
           <div class="glass-card p-5 rounded-xl space-y-1">
@@ -290,7 +290,7 @@
 
         <div v-if="mySubmissions.length === 0" class="glass-card rounded-2xl p-12 text-center space-y-3">
           <div class="text-4xl">📭</div>
-          <p class="text-sm text-slate-400">您还没有提交过任何影视，快去通过查重投稿赚取二楼币吧！</p>
+          <p class="text-sm text-slate-400">您还没有提交过任何影视，快去通过查重投稿赚取软妹币吧！</p>
           <button @click="currentTab = 'dedup'" class="bg-gradient-to-r from-pink-600 to-purple-600 text-white text-xs font-bold px-4 py-2 rounded-xl">立即去投稿</button>
         </div>
 
@@ -331,10 +331,10 @@
               <span>🛍️</span>
               <span>二楼权益商城</span>
             </h2>
-            <p class="text-xs text-slate-400 mt-1">使用您通过签到、投稿赚取的二楼币，兑换 Emby VIP 会员与专属专线特权</p>
+            <p class="text-xs text-slate-400 mt-1">使用您通过签到、投稿赚取的软妹币，兑换 Emby VIP 会员与专属专线特权</p>
           </div>
           <div class="text-right">
-            <span class="text-xs text-slate-400">当前二楼币余额</span>
+            <span class="text-xs text-slate-400">当前软妹币余额</span>
             <div class="text-xl font-black text-yellow-400">{{ user ? user.balance : 0 }} 🪙</div>
           </div>
         </div>
@@ -360,19 +360,19 @@
         </div>
       </div>
 
-      <!-- ================= Tab 5: 二楼币账本明细 ================= -->
+      <!-- ================= Tab 5: 软妹币账本明细 ================= -->
       <div v-if="currentTab === 'ledger'" class="space-y-6">
         <div class="flex items-center justify-between">
           <h2 class="text-lg font-bold text-white flex items-center space-x-2">
             <span>📜</span>
-            <span>二楼币全量收支账本明细</span>
+            <span>软妹币全量收支账本明细</span>
           </h2>
           <button @click="loadLedger" class="text-xs text-purple-400 hover:text-purple-300 font-medium">刷新账单</button>
         </div>
 
         <div class="glass-card rounded-2xl overflow-hidden border border-brand-border">
           <div v-if="ledgerList.length === 0" class="py-12 text-center text-sm text-slate-500">
-            暂无二楼币收支记录
+            暂无软妹币收支记录
           </div>
           <div v-else class="divide-y divide-slate-800/80">
             <div v-for="log in ledgerList" :key="log.id" class="p-4 flex items-center justify-between hover:bg-slate-800/30 transition">
@@ -474,7 +474,7 @@
           <img v-if="targetMedia.poster_url" :src="targetMedia.poster_url" class="w-12 h-16 object-cover rounded">
           <div>
             <div class="text-sm font-bold text-white">{{ targetMedia.title }} <span v-if="targetMedia.year" class="text-xs text-slate-400">({{ targetMedia.year }})</span></div>
-            <div class="text-xs text-pink-400 mt-0.5">TMDB #{{ targetMedia.tmdb_id }} · 预计奖励: {{ targetMedia.media_type === 'movie' ? 60 : 20 }} 二楼币</div>
+            <div class="text-xs text-pink-400 mt-0.5">TMDB #{{ targetMedia.tmdb_id }} · 预计奖励: {{ targetMedia.media_type === 'movie' ? 60 : 20 }} 软妹币</div>
           </div>
         </div>
 
@@ -496,7 +496,7 @@
             <textarea v-model="submitMagnet" rows="3" placeholder="magnet:?xt=urn:btih:..." class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs text-white font-mono focus:outline-none focus:border-pink-500"></textarea>
           </div>
           <p class="text-[11px] text-slate-400">
-            * 系统将自动执行服务端 Emby 权威查重、qB 离线拉取与 FFprobe 质检，入库后二楼币自动打入您的账户。
+            * 系统将自动执行服务端 Emby 权威查重、qB 离线拉取与 FFprobe 质检，入库后软妹币自动打入您的账户。
           </p>
         </div>
 
@@ -512,7 +512,7 @@
     <!-- 页脚 -->
     <footer class="border-t border-brand-border bg-brand-dark py-6 text-center text-xs text-slate-500">
       <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-        <div>🍋 二楼有请 · 影视众包入库与二楼币管理系统</div>
+        <div>🍋 二楼有请 · 影视众包入库与软妹币管理系统</div>
         <div>Designed with ❤️ for Emby & Media Community</div>
       </div>
     </footer>
@@ -554,7 +554,7 @@
             { id: 'dedup', name: '查重投稿', icon: '🔍' },
             { id: 'submissions', name: '我的任务', icon: '📦' },
             { id: 'shop', name: '二楼商城', icon: '🛍️' },
-            { id: 'ledger', name: '二楼币账本', icon: '📜' },
+            { id: 'ledger', name: '软妹币账本', icon: '📜' },
           ]
           if (user.value && (user.value.role === 'admin' || user.value.role === 'owner')) {
             list.push({ id: 'admin', name: '管理面板', icon: '👑' })
@@ -600,7 +600,7 @@
               localStorage.setItem('lemon_token', data.access_token)
               await fetchUserProfile()
               showLoginModal.value = false
-              alert(`欢迎回来，${data.username}！当前拥有 ${data.balance} 二楼币。`)
+              alert(`欢迎回来，${data.username}！当前拥有 ${data.balance} 软妹币。`)
             } else {
               alert(data.detail || '登录失败')
             }
@@ -765,10 +765,10 @@
             return
           }
           if (user.value.balance < item.cost_points) {
-            alert(`二楼币不足！您目前拥有 ${user.value.balance} 币，需要 ${item.cost_points} 币。`)
+            alert(`软妹币不足！您目前拥有 ${user.value.balance} 币，需要 ${item.cost_points} 币。`)
             return
           }
-          if (!confirm(`确认消耗 ${item.cost_points} 二楼币兑换【${item.title}】吗？`)) return
+          if (!confirm(`确认消耗 ${item.cost_points} 软妹币兑换【${item.title}】吗？`)) return
 
           isExchanging.value = true
           try {

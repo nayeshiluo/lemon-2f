@@ -21,7 +21,7 @@ async def get_ledger(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """获取当前用户的二楼币收支账本明细"""
+    """获取当前用户的软妹币收支账本明细"""
     ledger_repo = LedgerRepository(db)
     offset = (page - 1) * page_size
     entries, total = await ledger_repo.list_by_user(current_user.id, offset=offset, limit=page_size)
@@ -40,7 +40,7 @@ async def daily_sign_in(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """每日签到领取二楼币 (数据库 UNIQUE 约束防重 + 连签加成)"""
+    """每日签到领取软妹币 (数据库 UNIQUE 约束防重 + 连签加成)"""
     today = date.today()
     points_service = PointsService(db)
 
@@ -66,14 +66,14 @@ async def daily_sign_in(
             detail="您今天已经签过到了，明天再来吧！"
         )
 
-    # 2. 幂等发放二楼币
+    # 2. 幂等发放软妹币
     idempotency_key = f"sign_in_{current_user.id}_{today.isoformat()}"
     await points_service.add_points(
         user_id=current_user.id,
         amount=total_coins,
         event_type="sign_in",
         idempotency_key=idempotency_key,
-        description=f"每日签到奖励 (基础 {base_coins} + 连签 {streak_bonus} 二楼币)",
+        description=f"每日签到奖励 (基础 {base_coins} + 连签 {streak_bonus} 软妹币)",
         ref_type="sign_in_record",
         ref_id=str(record.id)
     )
@@ -88,5 +88,5 @@ async def daily_sign_in(
         reward_coins=total_coins,
         streak=streak,
         new_balance=current_user.balance,
-        message=f"签到成功！获得 {total_coins} 二楼币 (已连续签到 {streak} 天)"
+        message=f"签到成功！获得 {total_coins} 软妹币 (已连续签到 {streak} 天)"
     )

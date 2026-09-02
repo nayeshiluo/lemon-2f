@@ -55,7 +55,7 @@ async def get_or_create_tg_user(tg_id: int, tg_username: Optional[str]) -> User:
                 amount=settings.INITIAL_USER_COINS,
                 event_type="init",
                 idempotency_key=f"tg_init_{user.id}",
-                description="Telegram 首次进入自动建档赠送二楼币"
+                description="Telegram 首次进入自动建档赠送软妹币"
             )
             await session.commit()
             await session.refresh(user)
@@ -72,20 +72,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         f"✨ **欢迎来到【二楼有请】影视众包管理中心** ✨\n\n"
         f"👤 **用户身份**：`{user.username}` ({user.role.upper()})\n"
-        f"🪙 **二楼币余额**：`{user.balance}` 币\n"
+        f"🪙 **软妹币余额**：`{user.balance}` 币\n"
         f"🔥 **连签天数**：`{user.sign_in_streak}` 天\n\n"
         f"📌 **常用指令**：\n"
         f"• `/find <片名>` —— TMDB & Emby 穿透查重\n"
         f"• `/upload <TMDB_ID> [S01E07] <磁力>` —— 提交指定影视/单集入库\n"
-        f"• `/sign` —— 每日签到赚二楼币\n"
-        f"• `/points` —— 查看二楼币明细\n"
+        f"• `/sign` —— 每日签到赚软妹币\n"
+        f"• `/points` —— 查看软妹币明细\n"
         f"• `/shop` —— 兑换 Emby VIP / 专线特权\n"
     )
 
     keyboard = [
         [
             InlineKeyboardButton("🎁 每日签到", callback_data="btn_sign"),
-            InlineKeyboardButton("🪙 我的二楼币", callback_data="btn_points")
+            InlineKeyboardButton("🪙 我的软妹币", callback_data="btn_points")
         ],
         [
             InlineKeyboardButton("🛍️ 二楼商城", callback_data="btn_shop"),
@@ -143,9 +143,9 @@ async def cmd_sign(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = (
             f"🎉 **签到成功！**\n\n"
-            f"💰 获得奖励：`+{total}` 二楼币 (基础 {base} + 连签 {bonus})\n"
+            f"💰 获得奖励：`+{total}` 软妹币 (基础 {base} + 连签 {bonus})\n"
             f"🔥 连续签到：`{streak}` 天\n"
-            f"🪙 最新资产：`{db_user.balance}` 二楼币"
+            f"🪙 最新资产：`{db_user.balance}` 软妹币"
         )
         await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -247,8 +247,8 @@ async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🎬 作品标题：`{sub.title}`\n"
                 f"🔑 种子 Hash：`{sub.torrent_hash}`\n"
                 f"⚙️ 当前状态：`排队下载 (Pending)`\n"
-                f"🎁 预计奖励：`{sub.reward_points}` 二楼币\n\n"
-                f"系统将在下载完成后自动执行 **FFprobe 质检**与 **规范化落盘入库**，入库成功后二楼币将秒级自动入账！",
+                f"🎁 预计奖励：`{sub.reward_points}` 软妹币\n\n"
+                f"系统将在下载完成后自动执行 **FFprobe 质检**与 **规范化落盘入库**，入库成功后软妹币将秒级自动入账！",
                 parse_mode="Markdown"
             )
         except ValueError as e:
@@ -287,7 +287,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 await session.flush()
             except IntegrityError:
                 await session.rollback()
-                await query.edit_message_text(f"⚠️ 您今天已经签过到了，明天再来哦！当前余额：`{db_user.balance}` 二楼币", parse_mode="Markdown")
+                await query.edit_message_text(f"⚠️ 您今天已经签过到了，明天再来哦！当前余额：`{db_user.balance}` 软妹币", parse_mode="Markdown")
                 return
 
             points_service = PointsService(session)
@@ -305,9 +305,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
             await query.edit_message_text(
                 f"🎉 **签到成功！**\n\n"
-                f"💰 获得奖励：`+{total}` 二楼币 (基础 {base} + 连签 {bonus})\n"
+                f"💰 获得奖励：`+{total}` 软妹币 (基础 {base} + 连签 {bonus})\n"
                 f"🔥 连续签到：`{streak}` 天\n"
-                f"🪙 最新资产：`{db_user.balance}` 二楼币",
+                f"🪙 最新资产：`{db_user.balance}` 软妹币",
                 parse_mode="Markdown"
             )
 
@@ -316,11 +316,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             db_user = await session.get(User, user.id)
             balance = db_user.balance if db_user else 0
             await query.edit_message_text(
-                f"🪙 **【二楼有请】我的二楼币资产**\n\n"
+                f"🪙 **【二楼有请】我的软妹币资产**\n\n"
                 f"👤 用户：`{user.username}`\n"
-                f"💰 当前可用余额：`{balance}` 二楼币\n"
+                f"💰 当前可用余额：`{balance}` 软妹币\n"
                 f"🔥 连续签到：`{user.sign_in_streak}` 天\n\n"
-                f"💡 每日签到、投稿补片均可赚取二楼币，可在商城兑换 Emby VIP 与高速通道！",
+                f"💡 每日签到、投稿补片均可赚取软妹币，可在商城兑换 Emby VIP 与高速通道！",
                 parse_mode="Markdown"
             )
 

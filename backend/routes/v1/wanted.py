@@ -38,7 +38,7 @@ async def create_wanted_bounty(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """发布求片悬赏 (真实 Escrow 冻结二楼币)"""
+    """发布求片悬赏 (真实 Escrow 冻结软妹币)"""
     points_service = PointsService(db)
     wanted_repo = WantedRepository(db)
 
@@ -80,7 +80,7 @@ async def cancel_wanted_bounty(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """取消悬赏并原路全额退款二楼币押金"""
+    """取消悬赏并原路全额退款软妹币押金"""
     wanted_repo = WantedRepository(db)
     points_service = PointsService(db)
 
@@ -113,6 +113,6 @@ async def cancel_wanted_bounty(
 
     return {
         "success": True,
-        "message": f"悬赏已取消，{wanted.bounty_points} 二楼币押金已全额退还至您的账户！",
+        "message": f"悬赏已取消，{wanted.bounty_points} 软妹币押金已全额退还至您的账户！",
         "new_balance": current_user.balance
     }

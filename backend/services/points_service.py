@@ -10,7 +10,7 @@ from backend.repositories.user_repo import UserRepository
 logger = logging.getLogger("lemon_2f.points")
 
 class PointsService:
-    """二楼币原子总账服务 (SELECT FOR UPDATE + Append-Only 流水 + Idempotency Key 强幂等)"""
+    """软妹币原子总账服务 (SELECT FOR UPDATE + Append-Only 流水 + Idempotency Key 强幂等)"""
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -28,7 +28,7 @@ class PointsService:
         ref_id: Optional[str] = None
     ) -> Optional[PointsLedger]:
         """
-        幂等增加二楼币 (若 idempotency_key 已存在，直接返回既有记录，绝不重复加分)
+        幂等增加软妹币 (若 idempotency_key 已存在，直接返回既有记录，绝不重复加分)
         """
         existing = await self.ledger_repo.get_by_idempotency_key(idempotency_key)
         if existing:
@@ -72,7 +72,7 @@ class PointsService:
         allow_negative: bool = False
     ) -> Optional[PointsLedger]:
         """
-        原子扣除二楼币 (支持余额校验与行级锁)
+        原子扣除软妹币 (支持余额校验与行级锁)
         """
         existing = await self.ledger_repo.get_by_idempotency_key(idempotency_key)
         if existing:
@@ -85,7 +85,7 @@ class PointsService:
             raise ValueError(f"User #{user_id} not found")
 
         if not allow_negative and user.balance < amount:
-            raise ValueError(f"二楼币余额不足 (当前: {user.balance}，需要: {amount})")
+            raise ValueError(f"软妹币余额不足 (当前: {user.balance}，需要: {amount})")
 
         user.balance -= amount
         new_balance = user.balance

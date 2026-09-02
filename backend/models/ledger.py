@@ -7,7 +7,7 @@ from sqlalchemy.orm import relationship
 from backend.database import Base
 
 class PointsLedger(Base):
-    """二楼币流水账本 (只增只写 Append-Only，防双花双发)"""
+    """软妹币流水账本 (只增只写 Append-Only，防双花双发)"""
     __tablename__ = "points_ledger"
 
     id = Column(Integer, primary_key=True, index=True)

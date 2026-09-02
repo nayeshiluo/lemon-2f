@@ -22,7 +22,7 @@ class User(Base):
     role = Column(String(32), default="user", nullable=False)
     is_whitelisted = Column(Boolean, default=False, nullable=False)
     
-    # 核心资产：初始余额必须为 0！所有二楼币增减必须严格通过 PointsService/PointsLedger 原子入账
+    # 核心资产：初始余额必须为 0！所有软妹币增减必须严格通过 PointsService/PointsLedger 原子入账
     balance = Column(Integer, default=0, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     

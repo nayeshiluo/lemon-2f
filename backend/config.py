@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     APP_ENV: str = "production" # production / development / testing
     DEBUG: bool = False
     
-    SYSTEM_TITLE: str = "二楼有请 · 影视众包入库与二楼币管理系统"
-    CURRENCY_NAME: str = "二楼币"
+    SYSTEM_TITLE: str = "二楼有请 · 影视众包入库与软妹币管理系统"
+    CURRENCY_NAME: str = "软妹币"
     CURRENCY_SYMBOL: str = "🪙"
     
     # 核心安全与鉴权

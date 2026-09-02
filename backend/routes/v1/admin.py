@@ -90,7 +90,7 @@ async def adjust_points(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """管理员手动调账/奖惩二楼币"""
+    """管理员手动调账/奖惩软妹币"""
     points_service = PointsService(db)
     user_repo = UserRepository(db)
     user = await user_repo.get_by_id(target_user_id)

@@ -38,7 +38,7 @@ async def exchange_item(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """使用二楼币兑换权益商品 (SELECT FOR UPDATE + 真实原子扣币减库存)"""
+    """使用软妹币兑换权益商品 (SELECT FOR UPDATE + 真实原子扣币减库存)"""
     points_service = PointsService(db)
     shop_repo = ShopRepository(db)
 
@@ -67,7 +67,7 @@ async def exchange_item(
     if item.stock > 0:
         item.stock -= 1
 
-    # 扣减二楼币
+    # 扣减软妹币
     idempotency_key = f"shop_order_{order.id}_{current_user.id}"
     try:
         await points_service.deduct_points(

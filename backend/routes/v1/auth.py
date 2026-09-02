@@ -45,7 +45,7 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
                 amount=settings.INITIAL_USER_COINS,
                 event_type="init",
                 idempotency_key=f"init_user_{user.id}",
-                description="新用户首次登录赠送二楼币"
+                description="新用户首次登录赠送软妹币"
             )
         else:
             user.emby_user_id = emby_id
@@ -90,7 +90,7 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
             amount=settings.INITIAL_USER_COINS,
             event_type="init",
             idempotency_key=f"init_user_{user.id}",
-            description="初始化赠送二楼币"
+            description="初始化赠送软妹币"
         )
         await db.commit()
         await db.refresh(user)
