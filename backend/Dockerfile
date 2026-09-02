@@ -19,8 +19,10 @@ COPY frontend /app/frontend
 COPY alembic.ini /app/alembic.ini
 COPY migrations /app/migrations
 
+RUN chmod +x /app/backend/entrypoint.sh
+
 ENV PYTHONPATH=/app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/app/backend/entrypoint.sh"]

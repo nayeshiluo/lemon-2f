@@ -1,8 +1,8 @@
-"""initial_full_schema
+"""production_full_schema
 
-Revision ID: 5d9d9c2f9835
+Revision ID: 20c3902e4dac
 Revises: 
-Create Date: 2026-09-02 11:15:51.307971
+Create Date: 2026-09-02 11:54:42.519094
 
 """
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '5d9d9c2f9835'
+revision: str = '20c3902e4dac'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -96,7 +96,8 @@ def upgrade() -> None:
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
     sa.ForeignKeyConstraint(['created_by'], ['users.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('tmdb_id', 'media_type', name='uq_media_task_tmdb_type')
     )
     op.create_index(op.f('ix_media_tasks_id'), 'media_tasks', ['id'], unique=False)
     op.create_index(op.f('ix_media_tasks_media_type'), 'media_tasks', ['media_type'], unique=False)

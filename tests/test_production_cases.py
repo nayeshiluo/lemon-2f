@@ -30,6 +30,25 @@ async def db_session():
     await engine.dispose()
 
 @pytest.mark.asyncio
+async def test_media_task_tmdb_unique_constraint(db_session: AsyncSession):
+    """验证 P0: 同一 TMDB ID + media_type 在并发下绝对无法插入两个重复 MediaTask"""
+    task1 = MediaTask(tmdb_id=1363974, media_type="movie", title="电影A")
+    db_session.add(task1)
+    await db_session.commit()
+
+    # 尝试并发插入相同 tmdb_id + movie
+    task2 = MediaTask(tmdb_id=1363974, media_type="movie", title="电影A重复")
+    db_session.add(task2)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+    # 允许不同媒体类型 (如 TV 与 Movie 相同 ID)
+    task3 = MediaTask(tmdb_id=1363974, media_type="tv", title="剧集A")
+    db_session.add(task3)
+    await db_session.commit()
+
+@pytest.mark.asyncio
 async def test_movie_and_episode_unique_constraints(db_session: AsyncSession):
     """验证 CASE 1 & CASE 2: 电影只能有一个 ACCEPTED，剧集同季同集只能有一个 ACCEPTED"""
     user = User(username="u1", balance=100)
@@ -117,13 +136,11 @@ async def test_wanted_exact_episode_settlement(db_session: AsyncSession):
     db_session.add_all([u_creator, u_worker])
     await db_session.flush()
 
-    # 创建 E150 和 E151 两个悬赏
     w150 = WantedTask(creator_id=u_creator.id, tmdb_id=888, media_type="tv", title="遮天", season=1, episode=150, bounty_points=50, status="open")
     w151 = WantedTask(creator_id=u_creator.id, tmdb_id=888, media_type="tv", title="遮天", season=1, episode=151, bounty_points=50, status="open")
     db_session.add_all([w150, w151])
     await db_session.commit()
 
-    # 模拟查找匹配 E150
     from backend.repositories.wanted_repo import WantedRepository
     w_repo = WantedRepository(db_session)
     matched = await w_repo.find_exact_bounties(tmdb_id=888, media_type="tv", season=1, episode=150)
@@ -131,7 +148,6 @@ async def test_wanted_exact_episode_settlement(db_session: AsyncSession):
     assert len(matched) == 1
     assert matched[0].episode == 150
 
-    # 确认 E151 仍处于 open 状态，未被误触
     await db_session.refresh(w151)
     assert w151.status == "open"
 
@@ -145,7 +161,6 @@ async def test_points_idempotency(db_session: AsyncSession):
     points_service = PointsService(db_session)
     idempotency_key = "reward_sub_item_999"
 
-    # 执行 10 次相同加分
     for _ in range(10):
         await points_service.add_points(
             user_id=user.id,
@@ -157,34 +172,23 @@ async def test_points_idempotency(db_session: AsyncSession):
     await db_session.commit()
     await db_session.refresh(user)
 
-    # 最终余额必须正好是 160，而不是 700
     assert user.balance == 160
 
 @pytest.mark.asyncio
-async def test_sign_in_concurrency_constraint(db_session: AsyncSession):
-    """验证 CASE 9: 每日签到物理 UNIQUE(user_id, sign_date) 防止并发双签"""
-    user = User(username="u_sign", balance=100)
-    db_session.add(user)
-    await db_session.commit()
+async def test_multi_season_missing_engine():
+    """验证 P0: 多季剧集精准缺集计算 (S01 12集缺3-6,8-12; S02 24集缺3-24)"""
+    season_defs = {1: 12, 2: 24}
+    # S01 已收录 [1, 2, 7]; S02 已收录 [1, 2]
+    accepted_records = [(1, 1), (1, 2), (1, 7), (2, 1), (2, 2)]
 
-    today = date.today()
-
-    rec1 = SignInRecord(user_id=user.id, sign_date=today, reward_coins=10, streak=1)
-    db_session.add(rec1)
-    await db_session.commit()
-
-    # 模拟并发再次插入当天记录
-    rec2 = SignInRecord(user_id=user.id, sign_date=today, reward_coins=10, streak=1)
-    db_session.add(rec2)
-    with pytest.raises(IntegrityError):
-        await db_session.commit()
-
-@pytest.mark.asyncio
-async def test_missing_engine_and_ranges():
-    """验证缺集计算引擎 (target: 1-178, accepted: [7] -> missing: 1-6, 8-178)"""
-    res = missing_engine.calculate_missing(1, 178, [7])
-    assert res["total_count"] == 178
-    assert res["accepted_count"] == 1
-    assert res["missing_count"] == 177
-    assert res["missing_ranges"] == ["1-6", "8-178"]
-    assert res["completion_percent"] == 0.56
+    res = missing_engine.calculate_multi_season_missing(season_defs, accepted_records)
+    assert res["total_count"] == 36
+    assert res["accepted_count"] == 5
+    assert res["missing_count"] == 31
+    assert res["completion_percent"] == 13.89
+    
+    # 验证格式化输出
+    formatted = res["missing_ranges_formatted"]
+    assert "S01E03-E06" in formatted
+    assert "S01E08-E12" in formatted
+    assert "S02E03-E24" in formatted

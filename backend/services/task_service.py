@@ -1,10 +1,15 @@
-from typing import Optional, Dict, Any, List
+import logging
+from typing import Optional, Dict, Any, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
+
 from backend.models.task import MediaTask, TaskItem
 from backend.repositories.task_repo import TaskRepository
 from backend.clients.tmdb import tmdb_client
 from backend.clients.emby import emby_client
 from backend.services.missing_engine import missing_engine
+
+logger = logging.getLogger("lemon_2f.task_service")
 
 class TaskService:
     def __init__(self, db: AsyncSession):
@@ -19,29 +24,19 @@ class TaskService:
         region: Optional[str] = None,
         creator_id: Optional[int] = None
     ) -> MediaTask:
-        """根据 TMDB ID 获取或批量创建主体任务与所有 TaskItems"""
+        """
+        根据 TMDB 权威刮削创建或获取任务主体 (并发安全 + 严禁在 TMDB 失败时伪造假元数据)
+        """
         existing = await self.task_repo.get_task_by_tmdb(tmdb_id, media_type)
         if existing:
             return existing
 
+        # 从 TMDB 抓取权威详情
         detail = await tmdb_client.get_details(tmdb_id, media_type)
         if not detail:
-            # 基础降级创建
-            task = MediaTask(
-                tmdb_id=tmdb_id,
-                media_type=media_type,
-                category=category,
-                region=region,
-                title=f"TMDB #{tmdb_id}",
-                created_by=creator_id,
-                total_items_count=1
-            )
-            task = await self.task_repo.create_task(task)
-            item = TaskItem(task_id=task.id, season=None, episode=None, status="missing")
-            await self.task_repo.create_task_items([item])
-            return task
+            # 生产环境安全原则：TMDB 请求失败严禁假借单集继续，直接报错熔断
+            raise ValueError(f"无法从 TMDB 获取 ID #{tmdb_id} ({media_type}) 的权威元数据，操作已拦截")
 
-        # 从 TMDB 构造任务主体
         total_items = detail.get("number_of_episodes", 1) if media_type != "movie" else 1
         task = MediaTask(
             tmdb_id=tmdb_id,
@@ -56,7 +51,16 @@ class TaskService:
             total_items_count=total_items,
             created_by=creator_id
         )
-        task = await self.task_repo.create_task(task)
+
+        try:
+            task = await self.task_repo.create_task(task)
+        except IntegrityError:
+            # 并发竞争场景：已有并发线程刚插入了同名 Task，回滚后直接读取既有 Task
+            await self.db.rollback()
+            existing = await self.task_repo.get_task_by_tmdb(tmdb_id, media_type)
+            if existing:
+                return existing
+            raise
 
         # 批量生成 TaskItems
         items: List[TaskItem] = []
@@ -68,22 +72,24 @@ class TaskService:
                 for s in seasons:
                     s_num = s.get("season_number", 1)
                     if s_num == 0:
-                        continue # 跳过特别篇
+                        continue # 跳过 Special 花絮季
                     ep_count = s.get("episode_count", 0)
                     for ep in range(1, ep_count + 1):
                         items.append(TaskItem(task_id=task.id, season=s_num, episode=ep, status="missing"))
             else:
-                # 默认单季 1 到 N 集
                 for ep in range(1, total_items + 1):
                     items.append(TaskItem(task_id=task.id, season=1, episode=ep, status="missing"))
 
         if items:
-            await self.task_repo.create_task_items(items)
+            try:
+                await self.task_repo.create_task_items(items)
+            except IntegrityError:
+                await self.db.rollback()
 
         return task
 
     async def get_task_dedup_report(self, tmdb_id: int, media_type: str = "movie") -> Dict[str, Any]:
-        """获取影视综合查重与缺集分析报告 (统一穿透 Emby 与数据库)"""
+        """获取影视综合查重与多季精确缺集分析报告"""
         task = await self.get_or_create_task_from_tmdb(tmdb_id, media_type)
         items = await self.task_repo.get_items_by_task_id(task.id)
 
@@ -108,21 +114,32 @@ class TaskService:
                 "missing_ranges": [] if is_accepted else ["全片缺失"]
             }
         else:
-            # 剧集缺集计算
-            accepted_episodes = [it.episode for it in items if it.status == "accepted" and it.episode is not None]
-            
-            # 如果 Emby 库内有数据，合并 Emby 实际存在的单集
+            # 多季剧集精确对账
+            # 1. 构建季定义字典: season_num -> ep_count
+            season_defs: Dict[int, int] = {}
+            for it in items:
+                s = it.season or 1
+                season_defs[s] = max(season_defs.get(s, 0), it.episode or 1)
+
+            # 2. 收集所有已收录的 (season, episode)
+            accepted_tuples: List[Tuple[int, int]] = [
+                (it.season or 1, it.episode)
+                for it in items
+                if it.status == "accepted" and it.episode is not None
+            ]
+
+            # 3. 合并 Emby 库内实时查询到的单集
             if in_emby:
                 emby_eps = await emby_client.get_series_episodes(str(emby_item.get("Id")))
                 for ep in emby_eps:
-                    idx = ep.get("IndexNumber")
-                    if idx and idx not in accepted_episodes:
-                        accepted_episodes.append(idx)
+                    s_idx = ep.get("ParentIndexNumber") or 1
+                    e_idx = ep.get("IndexNumber")
+                    if e_idx and (s_idx, e_idx) not in accepted_tuples:
+                        accepted_tuples.append((s_idx, e_idx))
 
-            max_ep = max([it.episode for it in items if it.episode is not None] or [1])
-            calc_res = missing_engine.calculate_missing(1, max_ep, accepted_episodes)
-
+            calc_res = missing_engine.calculate_multi_season_missing(season_defs, accepted_tuples)
             can_submit = not calc_res["is_complete"]
+
             return {
                 "task_id": task.id,
                 "tmdb_id": tmdb_id,
@@ -136,8 +153,8 @@ class TaskService:
                 "accepted_episodes_count": calc_res["accepted_count"],
                 "missing_episodes_count": calc_res["missing_count"],
                 "completion_percent": calc_res["completion_percent"],
-                "missing_ranges": calc_res["missing_ranges"],
                 "missing_ranges_formatted": calc_res["missing_ranges_formatted"],
                 "status_label": "全剧已收录" if calc_res["is_complete"] else f"缺 {calc_res['missing_ranges_formatted']}",
-                "can_submit": can_submit
+                "can_submit": can_submit,
+                "seasons_detail": calc_res["seasons_detail"]
             }

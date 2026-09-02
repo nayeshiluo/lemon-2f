@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, DateTime, ForeignKey, 
-    Index, func
+    Index, UniqueConstraint, func
 )
 from sqlalchemy.orm import relationship
 from backend.database import Base
@@ -15,8 +15,8 @@ class MediaTask(Base):
     
     # 业务媒体分类: movie (电影), tv (电视剧), anime (动漫), variety (综艺)
     media_type = Column(String(32), default="movie", nullable=False, index=True)
-    category = Column(String(64), nullable=True) # 细分题材
-    region = Column(String(64), nullable=True)   # 地区 (华语/日韩/欧美/港台)
+    category = Column(String(64), nullable=True)
+    region = Column(String(64), nullable=True)
     
     title = Column(String(255), nullable=False, index=True)
     original_title = Column(String(255), nullable=True)
@@ -33,6 +33,11 @@ class MediaTask(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # 关键防重：同一 TMDB 作品 + 媒体类型 必须唯一，杜绝并发生成多个重复任务
+    __table_args__ = (
+        UniqueConstraint("tmdb_id", "media_type", name="uq_media_task_tmdb_type"),
+    )
 
     items = relationship("TaskItem", back_populates="task", cascade="all, delete-orphan")
     submissions = relationship("Submission", back_populates="task")
@@ -73,7 +78,7 @@ Index(
     sqlite_where=(TaskItem.season.is_(None)) & (TaskItem.episode.is_(None))
 )
 
-# 2. 任务项剧集单集防重
+# 2. 任务项剧集单集防重 (Season + Episode 复合防重)
 Index(
     "uq_task_item_episode",
     TaskItem.task_id,

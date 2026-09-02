@@ -44,11 +44,14 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-lemon_2f}
       - REDIS_URL=redis://redis:6379/0
+      - QB_CONTAINER_DOWNLOAD_PATH=/downloads/lemon_2f
+      - MEDIA_MOVIES_CONTAINER_PATH=/media/movies
+      - MEDIA_TV_CONTAINER_PATH=/media/tv
     volumes:
       - ./data:/app/data
-      - ${MEDIA_MOVIES_PATH:-/media/movies}:/media/movies
-      - ${MEDIA_TV_PATH:-/media/tv}:/media/tv
-      - ${QB_SAVE_PATH:-/downloads/lemon_2f}:/downloads/lemon_2f
+      - ${MEDIA_MOVIES_HOST_PATH:-/media/movies}:/media/movies
+      - ${MEDIA_TV_HOST_PATH:-/media/tv}:/media/tv
+      - ${QB_HOST_DOWNLOAD_PATH:-/downloads/lemon_2f}:/downloads/lemon_2f
     ports:
       - "8000:8000"
     depends_on:

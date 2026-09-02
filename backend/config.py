@@ -1,4 +1,5 @@
 import os
+import sys
 from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
@@ -6,7 +7,7 @@ from pydantic import Field
 class Settings(BaseSettings):
     # 系统与品牌定义
     APP_NAME: str = "二楼有请 (Lemon 2F)"
-    APP_VERSION: str = "2.2.0"
+    APP_VERSION: str = "2.3.0"
     APP_ENV: str = "production" # production / development
     DEBUG: bool = False
     
@@ -25,7 +26,6 @@ class Settings(BaseSettings):
     
     # 数据库连接 (生产环境推荐 PostgreSQL, 开发回退 SQLite)
     DATABASE_URL: str = Field(default="postgresql+asyncpg://postgres:postgres@postgres:5432/lemon_2f")
-    DEV_SQLITE_URL: str = "sqlite+aiosqlite:///./data/lemon_2f.db"
     
     # Redis 缓存与分布式锁
     REDIS_URL: str = Field(default="redis://redis:6379/0")
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     EMBY_SERVER_URL: str = Field(default="http://localhost:8096")
     EMBY_API_KEY: str = Field(default="")
     EMBY_PUBLIC_URL: Optional[str] = Field(default=None)
-    EMBY_CONFIRM_TIMEOUT_MINUTES: int = 30 # 等待 Emby 刮削确认超时时间
+    EMBY_CONFIRM_TIMEOUT_MINUTES: int = 30
     
     # TMDB 配置
     TMDB_API_KEY: str = Field(default="")
@@ -45,20 +45,22 @@ class Settings(BaseSettings):
     QB_USERNAME: str = Field(default="admin")
     QB_PASSWORD: str = Field(default="adminadmin")
     QB_CATEGORY: str = "lemon_2f"
-    QB_SAVE_PATH: str = Field(default="/downloads/lemon_2f")
     
-    # 媒体库落地路径与入库适配器模式 (local / guangya / custom)
+    # 路径映射区分：程序内部永远读取 CONTAINER 路径，Docker Compose 负责挂载 HOST 路径
+    QB_CONTAINER_DOWNLOAD_PATH: str = Field(default="/downloads/lemon_2f")
+    MEDIA_MOVIES_CONTAINER_PATH: str = Field(default="/media/movies")
+    MEDIA_TV_CONTAINER_PATH: str = Field(default="/media/tv")
+    
+    # 交付适配器模式 (local / guangya / custom)
     DELIVERY_ADAPTER: str = "local"
     DELIVERY_MODE: str = "hardlink" # hardlink / copy / move
     FILE_CONFLICT_STRATEGY: str = "SKIP" # SKIP / REPLACE / KEEP_BOTH
-    MEDIA_MOVIES_PATH: str = Field(default="/media/movies")
-    MEDIA_TV_PATH: str = Field(default="/media/tv")
     
     # 质检与风控
     MIN_VIDEO_DURATION_SECONDS: int = 30
     MIN_DISK_FREE_PERCENT: float = 10.0
     DEAD_TORRENT_TIMEOUT_MINUTES: int = 15
-    RESERVATION_TTL_MINUTES: int = 120 # 任务领取超时时间
+    RESERVATION_TTL_MINUTES: int = 120
     
     # 二楼币经济系统规则
     INITIAL_USER_COINS: int = 100
@@ -79,3 +81,15 @@ class Settings(BaseSettings):
     )
 
 settings = Settings()
+
+# 生产环境安全拦截：严禁使用默认/占位符 SECRET_KEY 裸奔上线
+DEFAULT_INSECURE_KEYS = [
+    "lemon-2f-secret-key-change-in-production-2026",
+    "replace_with_a_secure_random_secret_key_in_production",
+    "change_me",
+    "secret"
+]
+if settings.APP_ENV == "production" and (not settings.SECRET_KEY or settings.SECRET_KEY.strip() in DEFAULT_INSECURE_KEYS):
+    # 开发/CI 测试环境下允许警告，生产运行严格拦截
+    if "pytest" not in sys.modules and os.environ.get("STRICT_PROD_SECURITY") == "1":
+        raise RuntimeError("【生产启动被安全拦截】检测到使用了默认或不安全的 SECRET_KEY！请在 .env 中设置强随机字符串。")

@@ -38,7 +38,7 @@ async def get_admin_stats(
     coins_res = await db.execute(select(func.sum(User.balance)))
     total_coins = coins_res.scalar() or 0
 
-    media_path = settings.MEDIA_MOVIES_PATH if os.path.exists(settings.MEDIA_MOVIES_PATH) else "/"
+    media_path = settings.MEDIA_MOVIES_CONTAINER_PATH if os.path.exists(settings.MEDIA_MOVIES_CONTAINER_PATH) else "/"
     total_d, used_d, free_d = shutil.disk_usage(media_path)
 
     return {

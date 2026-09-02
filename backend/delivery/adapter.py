@@ -38,8 +38,8 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
 
     def __init__(
         self,
-        movies_root: str = settings.MEDIA_MOVIES_PATH,
-        tv_root: str = settings.MEDIA_TV_PATH,
+        movies_root: str = settings.MEDIA_MOVIES_CONTAINER_PATH,
+        tv_root: str = settings.MEDIA_TV_CONTAINER_PATH,
         delivery_mode: str = settings.DELIVERY_MODE,
         conflict_strategy: str = settings.FILE_CONFLICT_STRATEGY
     ):
@@ -78,7 +78,6 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
     def is_same_filesystem(path1: str, path2: str) -> bool:
         """检查源与目标是否在同一文件系统（能否硬链接）"""
         try:
-            # 确保父目录存在
             p2_dir = os.path.dirname(path2)
             os.makedirs(p2_dir, exist_ok=True)
             return os.stat(path1).st_dev == os.stat(p2_dir).st_dev
@@ -103,7 +102,6 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
         dest_dir = os.path.dirname(dest_path)
         os.makedirs(dest_dir, exist_ok=True)
 
-        # 冲突策略处理
         if os.path.exists(dest_path):
             if self.conflict_strategy == "SKIP":
                 logger.info(f"File already exists at destination, skipping: {dest_path}")
@@ -114,7 +112,6 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
                 base, e = os.path.splitext(dest_path)
                 dest_path = f"{base}_new{e}"
 
-        # 优先 Hardlink
         if self.delivery_mode == "hardlink":
             if self.is_same_filesystem(source_file, dest_path):
                 try:
@@ -126,7 +123,6 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
             else:
                 logger.info("Different filesystem detected, fallback to copy")
 
-        # Copy 模式
         try:
             shutil.copy2(source_file, dest_path)
             logger.info(f"Copy success: {dest_path}")
@@ -146,7 +142,7 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
         return False
 
 class GuangYaAdapter(BaseDeliveryAdapter):
-    """光鸭云盘适配器预留接口 (外部 API 待确认，规范化错误提示防假成功)"""
+    """光鸭云盘适配器预留接口"""
     async def deliver(self, *args, **kwargs) -> Tuple[bool, str, str]:
         return False, "Not implemented: GuangYa external API unavailable in current version", ""
 
