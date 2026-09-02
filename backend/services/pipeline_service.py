@@ -13,6 +13,7 @@ from backend.repositories.submission_repo import SubmissionRepository
 from backend.repositories.task_repo import TaskRepository
 from backend.repositories.wanted_repo import WantedRepository
 from backend.services.points_service import PointsService
+from backend.services.task_service import TaskService
 from backend.qc.inspector import ffprobe_qc
 from backend.delivery.adapter import get_delivery_adapter
 from backend.clients.emby import emby_client
@@ -33,6 +34,7 @@ class SubmissionPipelineService:
         self.task_repo = TaskRepository(db)
         self.wanted_repo = WantedRepository(db)
         self.points_service = PointsService(db)
+        self.task_service = TaskService(db)
         self.delivery_adapter = get_delivery_adapter()
 
     async def run_state_machine_cycle(self):
@@ -54,8 +56,27 @@ class SubmissionPipelineService:
                 logger.error(f"Error handling submission #{sub.id} state [{sub.status}]: {e}", exc_info=True)
         await self.db.commit()
 
+    async def _ensure_task_bound(self, sub: Submission) -> MediaTask:
+        """确保投稿任务主体绑定有效 (防 Foreign Key Violation)"""
+        if sub.task_id:
+            task = await self.task_repo.get_task_by_id(sub.task_id)
+            if task:
+                return task
+        
+        # 自动通过 TMDB 查重或创建 Task
+        task = await self.task_service.get_or_create_task_from_tmdb(
+            tmdb_id=sub.tmdb_id,
+            media_type=sub.media_type,
+            creator_id=sub.user_id
+        )
+        sub.task_id = task.id
+        await self.db.flush()
+        return task
+
     async def _handle_pending(self, sub: Submission):
-        """阶段 1: 提交到 qBittorrent 并创建关联下载作业"""
+        """阶段 1: 确保任务主体绑定、提交到 qBittorrent 并创建关联下载作业"""
+        await self._ensure_task_bound(sub)
+
         t_hash = sub.torrent_hash or qb_client.extract_hash_from_magnet(sub.magnet_uri)
         if not t_hash:
             sub.status = "rejected"
@@ -113,12 +134,11 @@ class SubmissionPipelineService:
 
         now = datetime.now(timezone.utc)
 
-        # 真实进度判定死种：若有下载增量则刷新活跃时间
+        # 真实进度判定死种：若有下载增量或实时速度则刷新活跃时间
         if downloaded > job.downloaded_bytes or dlspeed > 0:
             job.downloaded_bytes = downloaded
             job.last_progress_at = now
         else:
-            # 检查是否超时
             last_time = job.last_progress_at
             if last_time.tzinfo is None:
                 last_time = last_time.replace(tzinfo=timezone.utc)
@@ -139,6 +159,7 @@ class SubmissionPipelineService:
 
     async def _handle_inspecting(self, sub: Submission):
         """阶段 3: 多视频文件扫描、季集解析与 FFprobe 深度结构化质检"""
+        task = await self._ensure_task_bound(sub)
         job = sub.download_job
         content_path = job.content_path if job else os.path.join(settings.QB_SAVE_PATH, sub.title)
         if not content_path or not os.path.exists(content_path):
@@ -152,7 +173,6 @@ class SubmissionPipelineService:
             sub.error_message = "下载完成但未检索到有效主视频文件 (可能全为 sample/trailer)"
             return
 
-        # 逐个生成 SubmissionItem 并质检
         items: List[SubmissionItem] = []
         for v_path in video_files:
             is_valid, reason, meta = await ffprobe_qc.inspect(v_path)
@@ -160,18 +180,24 @@ class SubmissionPipelineService:
                 logger.warning(f"File {v_path} QC rejected: {reason}")
                 continue
 
-            # 智能提取季集
             parsed_season, parsed_episode = ffprobe_qc.parse_season_episode_from_filename(v_path)
             if sub.media_type == "movie":
                 s_num, e_num = None, None
             else:
-                s_num = parsed_season or 1
-                e_num = parsed_episode or 1
+                # 剧集集数解析防错安全策略: 若无法解析，不可无脑默认为 E01
+                if parsed_episode is None:
+                    # 仅当任务总共只有 1 集时允许安全反推
+                    if task.total_items_count == 1:
+                        s_num, e_num = 1, 1
+                    else:
+                        sub.status = "rejected"
+                        sub.error_message = f"文件 [{os.path.basename(v_path)}] 无法可靠解析集数，已拦截 (REJECTED_NEEDS_EPISODE_MAPPING)"
+                        return
+                else:
+                    s_num = parsed_season or 1
+                    e_num = parsed_episode
 
-            # 查找对应的 TaskItem
-            t_item = None
-            if sub.task_id:
-                t_item = await self.task_repo.get_item_by_season_episode(sub.task_id, s_num, e_num)
+            t_item = await self.task_repo.get_item_by_season_episode(task.id, s_num, e_num)
 
             reward = (settings.MOVIE_UPLOAD_REWARD if sub.media_type == "movie" else settings.EPISODE_UPLOAD_REWARD)
             if meta.get("is_4k"):
@@ -179,7 +205,7 @@ class SubmissionPipelineService:
 
             sub_item = SubmissionItem(
                 submission_id=sub.id,
-                task_id=sub.task_id or 0,
+                task_id=task.id,
                 task_item_id=t_item.id if t_item else None,
                 media_type=sub.media_type,
                 season=s_num,
@@ -201,7 +227,7 @@ class SubmissionPipelineService:
 
         if not items:
             sub.status = "rejected"
-            sub.error_message = "所有视频文件均未通过 FFprobe 质检 (时长过短或无效视频轨)"
+            sub.error_message = "所有视频文件均未通过 FFprobe 质检"
             return
 
         self.db.add_all(items)
@@ -237,14 +263,14 @@ class SubmissionPipelineService:
 
         await self.db.flush()
 
-        # 触发 Emby 全局刷新
+        # 触发 Emby 媒体库刷新
         await emby_client.refresh_library()
 
         sub.status = "waiting_emby"
         logger.info(f"Submission #{sub.id} -> WAITING_EMBY (Emby Library Refresh Triggered)")
 
     async def _handle_waiting_emby(self, sub: Submission):
-        """阶段 5: 轮询 Emby 真实刮削对账确认 -> 事务转 ACCEPTED -> 二楼币原子结算与悬赏兑现"""
+        """阶段 5: 轮询 Emby 真实刮削对账确认 -> 事务转 ACCEPTED -> 二楼币原子结算与精准悬赏兑现"""
         stmt = select(SubmissionItem).where(SubmissionItem.submission_id == sub.id)
         res = await self.db.execute(stmt)
         items = res.scalars().all()
@@ -252,11 +278,16 @@ class SubmissionPipelineService:
         all_confirmed = True
         total_awarded_points = 0
 
+        # 生产环境强制 Fail-Closed 校验
+        if settings.APP_ENV == "production" and not settings.EMBY_API_KEY:
+            sub.status = "failed"
+            sub.error_message = "生产环境未配置 EMBY_API_KEY，出于安全防刷禁止自动发币确认"
+            return
+
         for item in items:
             if item.status == "accepted":
                 continue
 
-            # 真实 Emby 对账校验
             confirmed = await emby_client.verify_item_presence(
                 tmdb_id=sub.tmdb_id,
                 media_type=item.media_type,
@@ -264,20 +295,19 @@ class SubmissionPipelineService:
                 episode=item.episode
             )
 
-            # 开发环境下若未配 Emby Key 允许直接放行
-            if not settings.EMBY_API_KEY:
+            # 仅在非生产 (测试) 且未配置 Key 时放行
+            if settings.APP_ENV != "production" and not settings.EMBY_API_KEY:
                 confirmed = True
 
             if confirmed:
                 item.status = "accepted"
-                # 更新 TaskItem 状态
                 if item.task_item_id:
                     t_item = await self.task_repo.db.get(TaskItem, item.task_item_id)
                     if t_item:
                         t_item.status = "accepted"
                         t_item.accepted_submission_item_id = item.id
 
-                # 幂等发放二楼币 (通过 Unique idempotency_key 保证绝不双发)
+                # 幂等发放二楼币
                 idempotency_key = f"reward_subitem_{item.id}"
                 await self.points_service.add_points(
                     user_id=sub.user_id,
@@ -291,7 +321,7 @@ class SubmissionPipelineService:
                 item.is_rewarded = True
                 total_awarded_points += item.reward_points
 
-                # 精确结算对应的悬赏单 (严格匹配 tmdb_id, media_type, season, episode)
+                # 精准结算对应悬赏单
                 exact_bounties = await self.wanted_repo.find_exact_bounties(
                     tmdb_id=sub.tmdb_id,
                     media_type=item.media_type,
@@ -302,7 +332,6 @@ class SubmissionPipelineService:
                     b.status = "completed"
                     b.claimant_id = sub.user_id
                     b.submission_item_id = item.id
-                    # 发放悬赏金给投稿人
                     b_key = f"bounty_reward_{b.id}_{item.id}"
                     await self.points_service.add_points(
                         user_id=sub.user_id,

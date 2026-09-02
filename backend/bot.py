@@ -12,10 +12,17 @@ from telegram.ext import (
 
 from backend.config import settings
 from backend.database import AsyncSessionLocal
-from backend.models import User, PointsLedger, Submission, WantedEpisode, ShopItem
-from backend.tmdb_client import tmdb_client
-from backend.emby_client import emby_client
+from backend.models.user import User
+from backend.models.ledger import PointsLedger, SignInRecord
+from backend.models.submission import Submission
+from backend.models.wanted import WantedTask
+from backend.models.shop import ShopItem
+from backend.clients.tmdb import tmdb_client
+from backend.clients.emby import emby_client
 from backend.qb_client import qb_client
+from backend.services.points_service import PointsService
+from backend.services.task_service import TaskService
+from backend.repositories.submission_repo import SubmissionRepository
 
 logger = logging.getLogger("lemon_2f.bot")
 
@@ -27,7 +34,6 @@ async def get_or_create_tg_user(tg_id: int, tg_username: Optional[str]) -> User:
         user = res.scalar_one_or_none()
 
         if not user:
-            # 检查是否为配置的超级管理员
             is_admin = tg_id in settings.TG_ADMIN_IDS
             role = "owner" if is_admin else "user"
             uname = tg_username or f"tg_{tg_id}"
@@ -42,14 +48,14 @@ async def get_or_create_tg_user(tg_id: int, tg_username: Optional[str]) -> User:
             session.add(user)
             await session.flush()
 
-            ledger = PointsLedger(
+            points_service = PointsService(session)
+            await points_service.add_points(
                 user_id=user.id,
                 amount=settings.INITIAL_USER_COINS,
-                balance_after=user.balance,
                 event_type="init",
+                idempotency_key=f"tg_init_{user.id}",
                 description="Telegram 首次进入自动建档赠送二楼币"
             )
-            session.add(ledger)
             await session.commit()
             await session.refresh(user)
 
@@ -58,6 +64,8 @@ async def get_or_create_tg_user(tg_id: int, tg_username: Optional[str]) -> User:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/start 指令"""
     tg_user = update.effective_user
+    if not update.message or not tg_user:
+        return
     user = await get_or_create_tg_user(tg_user.id, tg_user.username)
 
     welcome_text = (
@@ -71,7 +79,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/sign` —— 每日签到赚二楼币\n"
         f"• `/points` —— 查看二楼币明细\n"
         f"• `/shop` —— 兑换 Emby VIP / 专线特权\n"
-        f"• `/tasks` —— 查看当前下载与质检流水线\n"
     )
 
     keyboard = [
@@ -81,7 +88,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton("🛍️ 二楼商城", callback_data="btn_shop"),
-            InlineKeyboardButton("📥 任务进度", callback_data="btn_tasks")
+            InlineKeyboardButton("📦 投稿状态", callback_data="btn_tasks")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -91,40 +98,47 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_sign(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/sign 签到指令"""
     tg_user = update.effective_user
+    if not update.message or not tg_user:
+        return
     user = await get_or_create_tg_user(tg_user.id, tg_user.username)
 
-    # 导入签到逻辑
-    from datetime import datetime, timezone
+    from datetime import date, datetime, timezone
     import random
-    now = datetime.now(timezone.utc)
+    from sqlalchemy.exc import IntegrityError
+
+    today = date.today()
 
     async with AsyncSessionLocal() as session:
         db_user = await session.get(User, user.id)
-        if db_user.last_sign_in and db_user.last_sign_in.date() == now.date():
-            await update.message.reply_text("⚠️ 爸爸/亲爱的，您今天已经签过到了，明天再来哦！")
+        if not db_user:
             return
 
-        if db_user.last_sign_in and (now.date() - db_user.last_sign_in.date()).days == 1:
-            streak = db_user.sign_in_streak + 1
-        else:
-            streak = 1
-
+        streak = db_user.sign_in_streak + 1 if (db_user.last_sign_in and (today - db_user.last_sign_in.date()).days == 1) else 1
         base = random.randint(settings.SIGN_IN_MIN_COINS, settings.SIGN_IN_MAX_COINS)
         bonus = min(streak * 2, 20)
         total = base + bonus
 
-        db_user.balance += total
-        db_user.sign_in_streak = streak
-        db_user.last_sign_in = now
+        record = SignInRecord(user_id=db_user.id, sign_date=today, reward_coins=total, streak=streak)
+        session.add(record)
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            await update.message.reply_text("⚠️ 您今天已经签过到了，明天再来哦！")
+            return
 
-        ledger = PointsLedger(
+        points_service = PointsService(session)
+        await points_service.add_points(
             user_id=db_user.id,
             amount=total,
-            balance_after=db_user.balance,
             event_type="sign_in",
+            idempotency_key=f"tg_sign_{db_user.id}_{today.isoformat()}",
             description=f"Telegram 签到奖励 (基础 {base} + 连签 {bonus})"
         )
-        session.add(ledger)
+
+        db_user.balance += total
+        db_user.sign_in_streak = streak
+        db_user.last_sign_in = datetime.now(timezone.utc)
         await session.commit()
 
         msg = (
@@ -137,12 +151,14 @@ async def cmd_sign(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/find <片名> 穿透查重"""
+    if not update.message:
+        return
     if not context.args:
         await update.message.reply_text("💡 请输入要搜索的片名，例如：`/find 庆余年`", parse_mode="Markdown")
         return
 
     query = " ".join(context.args)
-    results = await tmdb_client.search_multi(query)
+    results = await tmdb_client.search_candidates(query)
     if not results:
         await update.message.reply_text(f"🔍 未在 TMDB 找到与 `{query}` 匹配的影视条目", parse_mode="Markdown")
         return
@@ -156,12 +172,11 @@ async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = item["title"]
         year = item.get("year", "未知")
 
-        # 查 Emby
         emby_item = await emby_client.find_by_tmdb_id(tmdb_id, m_type)
         if emby_item:
-            status_text = "🟢 **Emby 库内已收录** (无需重复投稿)"
+            status_text = "🟢 **Emby 库内已收录**"
         else:
-            status_text = f"🔴 **Emby 库内缺失** (可投稿赚取 `{settings.MOVIE_UPLOAD_REWARD if m_type == 'movie' else settings.EPISODE_UPLOAD_REWARD}` 二楼币)"
+            status_text = f"🔴 **Emby 缺失** (可投稿赚取 `{settings.MOVIE_UPLOAD_REWARD if m_type == 'movie' else settings.EPISODE_UPLOAD_REWARD}` 二楼币)"
 
         msg += (
             f"**{idx}. {title}** ({year}) [{m_type.upper()}]\n"
@@ -173,6 +188,8 @@ async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/upload <磁力链接> 提交任务"""
+    if not update.message:
+        return
     if not context.args:
         await update.message.reply_text("💡 请提供磁力链接，例如：`/upload magnet:?xt=urn:btih:...`", parse_mode="Markdown")
         return
@@ -184,22 +201,20 @@ async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     tg_user = update.effective_user
+    if not tg_user:
+        return
     user = await get_or_create_tg_user(tg_user.id, tg_user.username)
 
     async with AsyncSessionLocal() as session:
-        # 查重
-        stmt = select(Submission).where(
-            Submission.torrent_hash == t_hash,
-            Submission.status.in_(["pending", "downloading", "inspecting", "mounting", "completed"])
-        )
-        res = await session.execute(stmt)
-        if res.scalar_one_or_none():
+        sub_repo = SubmissionRepository(session)
+        existing = await sub_repo.get_by_torrent_hash(t_hash)
+        if existing and existing.status in ["pending", "downloading", "inspecting", "delivering", "waiting_emby", "accepted"]:
             await update.message.reply_text("⚠️ 该资源已有人提交或已完成入库，请勿重复提交！")
             return
 
         sub = Submission(
             user_id=user.id,
-            tmdb_id=0, # 待后台解析或补充
+            tmdb_id=0,
             media_type="movie",
             title=f"TG提交_{t_hash[:8]}",
             magnet_uri=magnet,
@@ -207,7 +222,7 @@ async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status="pending",
             reward_points=settings.MOVIE_UPLOAD_REWARD
         )
-        session.add(sub)
+        await sub_repo.create(sub)
         await session.commit()
         await session.refresh(sub)
 

@@ -3,10 +3,13 @@ import pytest_asyncio
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from backend.database import Base
-from backend.models import User, PointsLedger, Submission, ShopItem, ShopOrder
+from backend.models.user import User
+from backend.models.ledger import PointsLedger
+from backend.models.submission import Submission
+from backend.models.shop import ShopItem, ShopOrder
 from backend.security import get_password_hash, verify_password, create_access_token, decode_access_token
 from backend.qb_client import qb_client
-from backend.auto_mount import auto_mounter
+from backend.delivery.adapter import LocalDeliveryAdapter
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -46,7 +49,8 @@ async def test_user_and_points_ledger(db_session: AsyncSession):
         user_id=user.id,
         amount=-30,
         balance_after=user.balance,
-        event_type="bounty_create",
+        event_type="bounty_escrow",
+        idempotency_key="test_bounty_1",
         description="测试发布悬赏"
     )
     db_session.add(ledger1)
@@ -58,6 +62,7 @@ async def test_user_and_points_ledger(db_session: AsyncSession):
         amount=60,
         balance_after=user.balance,
         event_type="upload_reward",
+        idempotency_key="test_reward_1",
         description="测试入库奖励"
     )
     db_session.add(ledger2)
@@ -82,24 +87,28 @@ async def test_magnet_hash_extraction():
     assert extracted_hash == "4a123bcdef567890abcdef1234567890abcdef12"
 
 @pytest.mark.asyncio
-async def test_auto_mount_path_formatting():
+async def test_delivery_path_formatting():
+    adapter = LocalDeliveryAdapter(movies_root="/media/movies", tv_root="/media/tv")
+    
     # 电影路径生成
-    movie_path = auto_mounter.get_destination_path(
+    movie_path = adapter.get_dest_path(
         media_type="movie",
         title="二楼风云: 崛起",
         year=2026,
+        tmdb_id=1363974,
         extension=".mkv"
     )
-    assert "二楼风云 崛起 (2026)" in movie_path
+    assert "二楼风云 崛起 (2026) {tmdb-1363974}" in movie_path
     assert movie_path.endswith(".mkv")
 
     # 剧集路径生成
-    tv_path = auto_mounter.get_destination_path(
+    tv_path = adapter.get_dest_path(
         media_type="tv",
         title="二楼有请",
         year=2026,
-        season_number=2,
-        episode_number=5,
+        tmdb_id=9999,
+        season=2,
+        episode=5,
         extension=".mp4"
     )
     assert "Season 02" in tv_path

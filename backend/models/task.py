@@ -64,5 +64,22 @@ class TaskItem(Base):
     task = relationship("MediaTask", back_populates="items")
     submission_items = relationship("SubmissionItem", back_populates="task_item")
 
-# 复合索引优化查询
-Index("idx_taskitem_lookup", TaskItem.task_id, TaskItem.season, TaskItem.episode)
+# 1. 任务项电影防重
+Index(
+    "uq_task_item_movie",
+    TaskItem.task_id,
+    unique=True,
+    postgresql_where=(TaskItem.season.is_(None)) & (TaskItem.episode.is_(None)),
+    sqlite_where=(TaskItem.season.is_(None)) & (TaskItem.episode.is_(None))
+)
+
+# 2. 任务项剧集单集防重
+Index(
+    "uq_task_item_episode",
+    TaskItem.task_id,
+    TaskItem.season,
+    TaskItem.episode,
+    unique=True,
+    postgresql_where=(TaskItem.season.is_not(None)) & (TaskItem.episode.is_not(None)),
+    sqlite_where=(TaskItem.season.is_not(None)) & (TaskItem.episode.is_not(None))
+)

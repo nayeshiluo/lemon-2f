@@ -78,6 +78,23 @@ def upgrade() -> None:
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.PrimaryKeyConstraint('id')
     )
+    # TaskItem partial unique indexes
+    op.create_index(
+        'uq_task_item_movie',
+        'task_items',
+        ['task_id'],
+        unique=True,
+        postgresql_where=sa.text('season IS NULL AND episode IS NULL'),
+        sqlite_where=sa.text('season IS NULL AND episode IS NULL')
+    )
+    op.create_index(
+        'uq_task_item_episode',
+        'task_items',
+        ['task_id', 'season', 'episode'],
+        unique=True,
+        postgresql_where=sa.text('season IS NOT NULL AND episode IS NOT NULL'),
+        sqlite_where=sa.text('season IS NOT NULL AND episode IS NOT NULL')
+    )
 
     # 4. submissions
     op.create_table(
@@ -126,6 +143,23 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.PrimaryKeyConstraint('id')
+    )
+    # Partial unique indexes for SubmissionItem
+    op.create_index(
+        'uq_accepted_movie_item',
+        'submission_items',
+        ['task_id'],
+        unique=True,
+        postgresql_where=sa.text("status = 'accepted' AND media_type = 'movie'"),
+        sqlite_where=sa.text("status = 'accepted' AND media_type = 'movie'")
+    )
+    op.create_index(
+        'uq_accepted_episode_item',
+        'submission_items',
+        ['task_id', 'season', 'episode'],
+        unique=True,
+        postgresql_where=sa.text("status = 'accepted' AND media_type != 'movie'"),
+        sqlite_where=sa.text("status = 'accepted' AND media_type != 'movie'")
     )
 
     # 6. download_jobs
