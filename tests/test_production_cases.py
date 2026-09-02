@@ -13,8 +13,8 @@ from backend.models.ledger import PointsLedger, SignInRecord
 from backend.models.wanted import WantedTask
 from backend.services.points_service import PointsService
 from backend.services.missing_engine import missing_engine
+from backend.delivery.adapter import LocalDeliveryAdapter
 
-# 支持通过环境变量自动对接 CI 真实 PostgreSQL 服务，无环境变量时回退至 SQLite 内存测试
 TEST_DB_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 @pytest_asyncio.fixture
@@ -204,7 +204,6 @@ async def test_points_zero_balance_init_and_idempotency(db_session: AsyncSession
     await db_session.commit()
     await db_session.refresh(user)
 
-    # 验证余额正好为 100，杜绝了先 100 再加 100 变成 200 的错账
     assert user.balance == 100
 
     # 重复发放命中幂等拦截
@@ -218,6 +217,44 @@ async def test_points_zero_balance_init_and_idempotency(db_session: AsyncSession
     await db_session.commit()
     await db_session.refresh(user)
     assert user.balance == 100
+
+@pytest.mark.asyncio
+async def test_skip_conflict_strategy_prevents_unauthorized_rewards(tmp_path):
+    """验证 P0-2: 目标目录已存在历史文件时，SKIP 策略严格返回 False，防止冒领发币"""
+    media_dir = tmp_path / "media"
+    downloads_dir = tmp_path / "downloads"
+    media_dir.mkdir()
+    downloads_dir.mkdir()
+
+    adapter = LocalDeliveryAdapter(
+        movies_root=str(media_dir),
+        tv_root=str(media_dir),
+        delivery_mode="copy",
+        conflict_strategy="SKIP"
+    )
+
+    # 1. 模拟目标目录已有历史电影文件 (例如 100 字节)
+    dest_file = adapter.get_dest_path("movie", "测试电影", 2026, 12345, extension=".mkv")
+    os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+    with open(dest_file, "wb") as f:
+        f.write(b"0" * 100)
+
+    # 2. 模拟某用户提交了另一份不同的源文件
+    new_src = downloads_dir / "user_movie.mkv"
+    with open(new_src, "wb") as f:
+        f.write(b"1" * 200)
+
+    # 3. 执行交付，必须返回 False (交付失败，不可计为本次成果)
+    success, msg, path = await adapter.deliver(
+        source_file=str(new_src),
+        media_type="movie",
+        title="测试电影",
+        year=2026,
+        tmdb_id=12345
+    )
+    assert success is False
+    assert path == ""
+    assert "不计为本次交付成果" in msg
 
 @pytest.mark.asyncio
 async def test_multi_season_missing_engine():

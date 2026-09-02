@@ -34,7 +34,7 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
 
 class LocalDeliveryAdapter(BaseDeliveryAdapter):
-    """本地存储交付适配器 (支持 Hardlink / Copy / Move，带文件系统同分区检查与冲突策略)"""
+    """本地存储交付适配器 (带同分区校验、同源校验与防蹭发币冲突拦截)"""
 
     def __init__(
         self,
@@ -102,16 +102,30 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
         dest_dir = os.path.dirname(dest_path)
         os.makedirs(dest_dir, exist_ok=True)
 
+        # 核心冲突风控：防止已有历史资源被 SKIP 当成“本次交付成功”从而刷币
         if os.path.exists(dest_path):
             if self.conflict_strategy == "SKIP":
-                logger.info(f"File already exists at destination, skipping: {dest_path}")
-                return True, "文件已存在于目标目录 (SKIP策略)", dest_path
+                try:
+                    # 检查是否为同源硬链接
+                    if os.path.samefile(source_file, dest_path):
+                        return True, "文件已成功硬链接到目标路径", dest_path
+                except Exception:
+                    pass
+                # 目标存在非本次写入的历史异源文件，严禁返回 success=True 导致误发币
+                logger.warning(f"Destination already exists historical file, SKIP and mark non-delivered: {dest_path}")
+                return False, "目标目录已存在历史文件，根据SKIP策略不计为本次交付成果", ""
+            
             elif self.conflict_strategy == "REPLACE":
-                os.remove(dest_path)
+                try:
+                    os.remove(dest_path)
+                except Exception as e:
+                    return False, f"清理旧文件失败: {e}", ""
+            
             elif self.conflict_strategy == "KEEP_BOTH":
                 base, e = os.path.splitext(dest_path)
                 dest_path = f"{base}_new{e}"
 
+        # 执行 Hardlink
         if self.delivery_mode == "hardlink":
             if self.is_same_filesystem(source_file, dest_path):
                 try:
@@ -123,6 +137,7 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
             else:
                 logger.info("Different filesystem detected, fallback to copy")
 
+        # 执行 Copy
         try:
             shutil.copy2(source_file, dest_path)
             logger.info(f"Copy success: {dest_path}")

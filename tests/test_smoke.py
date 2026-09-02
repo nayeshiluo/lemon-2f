@@ -22,8 +22,16 @@ async def test_readiness_check_probe():
     """
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/health/ready")
-        # 当未启动独立 postgres 服务时，必须严格返回 503 阻止流量打入
         assert response.status_code in [200, 503]
         data = response.json()
         assert "database" in data
         assert "status" in data
+
+@pytest.mark.asyncio
+async def test_api_paginated_contract_structure():
+    """验证公共接口与前端绑定的分页契约规范 (必须包含 items 数组)"""
+    from backend.schemas import PaginatedResponse
+    resp = PaginatedResponse(items=[{"id": 1}], total=1, page=1, page_size=20, total_pages=1)
+    assert resp.items == [{"id": 1}]
+    assert resp.total == 1
+    assert resp.page == 1

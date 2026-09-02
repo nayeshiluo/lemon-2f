@@ -97,10 +97,12 @@ class MediaTaskResponse(BaseModel):
 class SubmissionCreate(BaseModel):
     tmdb_id: int
     media_type: str # movie / tv / anime / variety
-    title: str
+    title: Optional[str] = None
     year: Optional[int] = None
     magnet_uri: str
     task_id: Optional[int] = None
+    season: Optional[int] = None    # 剧集支持指定具体目标季
+    episode: Optional[int] = None   # 剧集支持指定具体目标集
 
 class SubmissionItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

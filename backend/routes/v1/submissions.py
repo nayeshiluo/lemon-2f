@@ -16,7 +16,7 @@ async def create_submission(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """提交磁力开启入库流水线 (统一通过 SubmissionService 执行)"""
+    """提交磁力开启入库流水线 (统一通过 SubmissionService 执行，支持剧集精确指定季集)"""
     service = SubmissionService(db)
     try:
         sub = await service.create_submission(
@@ -25,7 +25,9 @@ async def create_submission(
             media_type=req.media_type,
             magnet_uri=req.magnet_uri,
             title=req.title,
-            year=req.year
+            year=req.year,
+            season=req.season,
+            episode=req.episode
         )
         return sub
     except ValueError as e:

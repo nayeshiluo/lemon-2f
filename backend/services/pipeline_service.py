@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
+from sqlalchemy.exc import IntegrityError
 
 from backend.config import settings
 from backend.models.submission import Submission, SubmissionItem, DownloadJob
@@ -91,7 +92,6 @@ class SubmissionPipelineService:
 
         info = await qb_client.get_torrent_info(t_hash)
         if not info:
-            # 关键修复：强制显式传入容器共享挂载路径
             added = await qb_client.add_torrent(
                 urls=sub.magnet_uri,
                 category=settings.QB_CATEGORY,
@@ -114,7 +114,7 @@ class SubmissionPipelineService:
             sub.download_job.last_progress_at = datetime.now(timezone.utc)
 
         sub.status = "downloading"
-        logger.info(f"Submission #{sub.id} -> DOWNLOADING (hash: {t_hash}, savepath: {settings.QB_CONTAINER_DOWNLOAD_PATH})")
+        logger.info(f"Submission #{sub.id} -> DOWNLOADING (hash: {t_hash})")
 
     async def _handle_downloading(self, sub: Submission):
         """阶段 2: 进度监控与死种熔断"""
@@ -275,7 +275,6 @@ class SubmissionPipelineService:
             sub.error_message = "所有视频文件物理交付落盘均失败"
             return
 
-        # 记录进入 WAITING_EMBY 的初始时间戳
         sub.waiting_emby_since = datetime.now(timezone.utc)
         sub.status = "waiting_emby"
 
@@ -283,7 +282,7 @@ class SubmissionPipelineService:
         logger.info(f"Submission #{sub.id} -> WAITING_EMBY ({success_count}/{len(items)} delivered, Emby Refresh Triggered)")
 
     async def _handle_waiting_emby(self, sub: Submission):
-        """阶段 5: Emby 刮削确认、超时熔断与 Partial/Accepted 状态精细化判定"""
+        """阶段 5: Emby 刮削确认、超时熔断、并发唯一约束冲突收口与全量累计发币"""
         stmt = select(SubmissionItem).where(SubmissionItem.submission_id == sub.id)
         res = await self.db.execute(stmt)
         items = res.scalars().all()
@@ -300,17 +299,12 @@ class SubmissionPipelineService:
         
         is_timeout = (now - (since_time or now)).total_seconds() > (settings.EMBY_CONFIRM_TIMEOUT_MINUTES * 60)
 
-        total_awarded_points = 0
-        has_waiting_items = False
-
         for item in items:
             if item.status == "accepted":
                 continue
 
             if item.status != "waiting_emby" or not item.dest_file:
                 continue
-
-            has_waiting_items = True
 
             confirmed = await emby_client.verify_item_presence(
                 tmdb_id=sub.tmdb_id,
@@ -330,6 +324,15 @@ class SubmissionPipelineService:
                         t_item.status = "accepted"
                         t_item.accepted_submission_item_id = item.id
 
+                # 尝试提交 accepted 状态 (若遭遇并发唯一约束冲突，优雅捕获转为 rejected)
+                try:
+                    await self.db.flush()
+                except IntegrityError:
+                    await self.db.rollback()
+                    item.status = "rejected"
+                    logger.warning(f"Item #{item.id} duplicate accepted collision, gracefully caught as REJECTED")
+                    continue
+
                 # 幂等发放二楼币
                 idempotency_key = f"reward_subitem_{item.id}"
                 await self.points_service.add_points(
@@ -342,7 +345,6 @@ class SubmissionPipelineService:
                     ref_id=str(item.id)
                 )
                 item.is_rewarded = True
-                total_awarded_points += item.reward_points
 
                 # 精准结算对应悬赏单
                 exact_bounties = await self.wanted_repo.find_exact_bounties(
@@ -366,27 +368,27 @@ class SubmissionPipelineService:
                         ref_id=str(b.id)
                     )
             elif is_timeout:
-                # 超时熔断
                 item.status = "failed"
                 logger.warning(f"Item #{item.id} WAITING_EMBY timeout after {settings.EMBY_CONFIRM_TIMEOUT_MINUTES}m")
 
-        # 统计最终条目状态分布
+        # 核心统计修复：全量准确累计该投稿所有 accepted 项的真实总奖励
+        total_cumulative_points = sum(it.reward_points for it in items if it.status == "accepted" and it.is_rewarded)
         accepted_cnt = sum(1 for it in items if it.status == "accepted")
         failed_cnt = sum(1 for it in items if it.status in ["failed", "rejected"])
         remaining_waiting = sum(1 for it in items if it.status == "waiting_emby")
 
         sub.accepted_items_count = accepted_cnt
         sub.failed_items_count = failed_cnt
-        sub.reward_points = total_awarded_points
+        sub.reward_points = total_cumulative_points
 
         if remaining_waiting == 0:
             if accepted_cnt > 0 and failed_cnt > 0:
-                sub.status = "partial" # 部分入库成功
-                logger.info(f"Submission #{sub.id} -> PARTIAL ({accepted_cnt} accepted, {failed_cnt} failed, +{total_awarded_points} 🪙)")
+                sub.status = "partial"
+                logger.info(f"Submission #{sub.id} -> PARTIAL ({accepted_cnt} accepted, {failed_cnt} failed, total: +{total_cumulative_points} 🪙)")
             elif accepted_cnt > 0 and failed_cnt == 0:
-                sub.status = "accepted" # 全量入库成功
-                logger.info(f"Submission #{sub.id} -> ALL ACCEPTED (+{total_awarded_points} 🪙)")
+                sub.status = "accepted"
+                logger.info(f"Submission #{sub.id} -> ALL ACCEPTED (total: +{total_cumulative_points} 🪙)")
             elif accepted_cnt == 0:
-                sub.status = "failed" # 全量失败/超时
+                sub.status = "failed"
                 sub.error_message = f"Emby 识别确认超时 ({settings.EMBY_CONFIRM_TIMEOUT_MINUTES}分钟未发现)" if is_timeout else "入库失败"
                 logger.info(f"Submission #{sub.id} -> ALL FAILED")
