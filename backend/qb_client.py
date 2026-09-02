@@ -1,4 +1,5 @@
 import re
+import base64
 import logging
 import httpx
 from typing import Optional, Dict, Any, List
@@ -7,7 +8,7 @@ from backend.config import settings
 logger = logging.getLogger("lemon_2f.qb")
 
 class QBittorrentClient:
-    """qBittorrent Web API 异步客户端 (带自动重连与共享挂载路径强制下发)"""
+    """qBittorrent Web API 异步客户端 (带自动重连、BTIH Base32->Hex 规范化与挂载路径强制下发)"""
     def __init__(self, host: str = settings.QB_HOST, username: str = settings.QB_USERNAME, password: str = settings.QB_PASSWORD):
         self.host = host.rstrip("/")
         self.username = username
@@ -40,11 +41,29 @@ class QBittorrentClient:
 
     @staticmethod
     def extract_hash_from_magnet(magnet_uri: str) -> Optional[str]:
-        """从磁力链接解析 info_hash"""
+        """从磁力链接解析 info_hash，并将 32 位 Base32 编码统一转换为 40 位标准 Hex"""
         match = re.search(r"urn:btih:([a-zA-Z0-9]{32,40})", magnet_uri, re.IGNORECASE)
-        if match:
-            return match.group(1).lower()
-        return None
+        if not match:
+            # 兼容带等号或更短的字符串
+            match_broad = re.search(r"urn:btih:([a-zA-Z2-7]{32})", magnet_uri, re.IGNORECASE)
+            if not match_broad:
+                return None
+            raw_hash = match_broad.group(1).strip()
+        else:
+            raw_hash = match.group(1).strip()
+        
+        # 若为 32 位 Base32 编码，转换为 40 位 Hex 字符串
+        if len(raw_hash) == 32:
+            try:
+                # 标准 Base32 长度为 32 字符，补 6 个 = 作为 40 字节倍数
+                padded = raw_hash.upper() + "=" * ((8 - len(raw_hash) % 8) % 8)
+                decoded_bytes = base64.b32decode(padded)
+                return decoded_bytes.hex().lower()
+            except Exception as e:
+                logger.warning(f"Failed to decode base32 btih {raw_hash}: {e}")
+                return raw_hash.lower()
+
+        return raw_hash.lower()
 
     async def add_torrent(
         self,

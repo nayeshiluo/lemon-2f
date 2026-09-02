@@ -98,7 +98,7 @@ async def test_delivery_path_formatting():
         tmdb_id=1363974,
         extension=".mkv"
     )
-    assert "二楼风云 崛起 (2026) {tmdb-1363974}" in movie_path
+    assert "二楼风云 崛起 (2026) [tmdbid=1363974]" in movie_path
     assert movie_path.endswith(".mkv")
 
     # 剧集路径生成

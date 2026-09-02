@@ -16,6 +16,11 @@ class TaskService:
         self.db = db
         self.task_repo = TaskRepository(db)
 
+    @staticmethod
+    def get_canonical_tmdb_type(media_type: str) -> str:
+        """规范化 TMDB 权威媒体类型：movie 对应 movie，tv / anime / variety 统一为 tv 规范身份"""
+        return "movie" if media_type.lower() == "movie" else "tv"
+
     async def get_or_create_task_from_tmdb(
         self,
         tmdb_id: int,
@@ -25,21 +30,25 @@ class TaskService:
         creator_id: Optional[int] = None
     ) -> MediaTask:
         """
-        根据 TMDB 权威刮削创建或获取任务主体 (并发安全 + 支持 Season 0 特别篇)
+        根据 TMDB 权威刮削创建或获取任务主体 (规范化 canonical media_type 防换皮多 Task 绕过唯一约束)
         """
-        existing = await self.task_repo.get_task_by_tmdb(tmdb_id, media_type)
+        canonical_type = self.get_canonical_tmdb_type(media_type)
+        actual_category = category or media_type
+
+        # 优先使用规范化类型查重 (tmdb_id, canonical_type)
+        existing = await self.task_repo.get_task_by_tmdb(tmdb_id, canonical_type)
         if existing:
             return existing
 
-        detail = await tmdb_client.get_details(tmdb_id, media_type)
+        detail = await tmdb_client.get_details(tmdb_id, canonical_type)
         if not detail:
-            raise ValueError(f"无法从 TMDB 获取 ID #{tmdb_id} ({media_type}) 的权威元数据，操作已拦截")
+            raise ValueError(f"无法从 TMDB 获取 ID #{tmdb_id} ({canonical_type}) 的权威元数据，操作已拦截")
 
-        total_items = detail.get("number_of_episodes", 1) if media_type != "movie" else 1
+        total_items = detail.get("number_of_episodes", 1) if canonical_type != "movie" else 1
         task = MediaTask(
             tmdb_id=tmdb_id,
-            media_type=media_type,
-            category=category,
+            media_type=canonical_type,
+            category=actual_category,
             region=region,
             title=detail.get("title", ""),
             original_title=detail.get("original_title"),
@@ -54,14 +63,14 @@ class TaskService:
             task = await self.task_repo.create_task(task)
         except IntegrityError:
             await self.db.rollback()
-            existing = await self.task_repo.get_task_by_tmdb(tmdb_id, media_type)
+            existing = await self.task_repo.get_task_by_tmdb(tmdb_id, canonical_type)
             if existing:
                 return existing
             raise
 
         # 批量生成 TaskItems (完整支持 Season 0 Special 季)
         items: List[TaskItem] = []
-        if media_type == "movie":
+        if canonical_type == "movie":
             items.append(TaskItem(task_id=task.id, season=None, episode=None, status="missing"))
         else:
             seasons = detail.get("seasons", [])
@@ -85,13 +94,14 @@ class TaskService:
 
     async def get_task_dedup_report(self, tmdb_id: int, media_type: str = "movie") -> Dict[str, Any]:
         """获取影视综合查重与多季精确缺集分析报告"""
-        task = await self.get_or_create_task_from_tmdb(tmdb_id, media_type)
+        canonical_type = self.get_canonical_tmdb_type(media_type)
+        task = await self.get_or_create_task_from_tmdb(tmdb_id, canonical_type)
         items = await self.task_repo.get_items_by_task_id(task.id)
 
-        emby_item = await emby_client.find_by_tmdb_id(tmdb_id, media_type)
+        emby_item = await emby_client.find_by_tmdb_id(tmdb_id, canonical_type)
         in_emby = emby_item is not None
 
-        if media_type == "movie":
+        if canonical_type == "movie":
             is_accepted = any(it.status == "accepted" for it in items) or in_emby
             return {
                 "task_id": task.id,
@@ -133,7 +143,7 @@ class TaskService:
             return {
                 "task_id": task.id,
                 "tmdb_id": tmdb_id,
-                "media_type": media_type,
+                "media_type": canonical_type,
                 "title": task.title,
                 "year": task.year,
                 "poster_url": task.poster_path,

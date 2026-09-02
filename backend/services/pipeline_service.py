@@ -1,4 +1,5 @@
 import os
+import shutil
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Tuple
@@ -74,9 +75,10 @@ class SubmissionPipelineService:
             if task:
                 return task
         
+        canonical_type = self.task_service.get_canonical_tmdb_type(sub.media_type)
         task = await self.task_service.get_or_create_task_from_tmdb(
             tmdb_id=sub.tmdb_id,
-            media_type=sub.media_type,
+            media_type=canonical_type,
             creator_id=sub.user_id
         )
         sub.task_id = task.id
@@ -84,7 +86,20 @@ class SubmissionPipelineService:
         return task
 
     async def _handle_pending(self, sub: Submission):
-        """阶段 1: 确保任务绑定、强制下发 save_path 提交到 qB 并创建下载作业"""
+        """阶段 1: 磁盘熔断检查、确保任务绑定、强制下发 save_path 提交到 qB"""
+        # 磁盘熔断检查 (低于 10% 拒绝开启新下载)
+        download_root = settings.QB_CONTAINER_DOWNLOAD_PATH if os.path.exists(settings.QB_CONTAINER_DOWNLOAD_PATH) else "/"
+        try:
+            total_d, used_d, free_d = shutil.disk_usage(download_root)
+            free_pct = (free_d / total_d) * 100
+            if free_pct < settings.MIN_DISK_FREE_PERCENT:
+                sub.status = "failed"
+                sub.error_message = f"服务器下载存储空间不足 ({free_pct:.1f}% < {settings.MIN_DISK_FREE_PERCENT}%)，下载已被系统熔断"
+                await self._release_reservation(sub)
+                return
+        except Exception:
+            pass
+
         try:
             await self._ensure_task_bound(sub)
         except Exception as e:
@@ -129,12 +144,32 @@ class SubmissionPipelineService:
         logger.info(f"Submission #{sub.id} -> DOWNLOADING (hash: {t_hash}, savepath: {settings.QB_CONTAINER_DOWNLOAD_PATH})")
 
     async def _handle_downloading(self, sub: Submission):
-        """阶段 2: 进度监控、异常捕获与死种熔断"""
+        """阶段 2: 进度监控、种子丢失恢复与死种熔断"""
         if not sub.torrent_hash or not sub.download_job:
             return
 
         info = await qb_client.get_torrent_info(sub.torrent_hash)
+        now = datetime.now(timezone.utc)
+
+        # 种子在 qB 意外丢失恢复处理
         if not info:
+            last_time = sub.download_job.last_progress_at or sub.updated_at
+            if last_time and last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            missing_seconds = (now - (last_time or now)).total_seconds()
+            
+            if missing_seconds > 180: # 超过 3 分钟检索不到种子，尝试自动重新添加一次
+                re_added = await qb_client.add_torrent(
+                    urls=sub.magnet_uri,
+                    category=settings.QB_CATEGORY,
+                    save_path=settings.QB_CONTAINER_DOWNLOAD_PATH
+                )
+                if not re_added and missing_seconds > 600: # 超过 10 分钟持续丢失，标记为 FAILED
+                    sub.status = "failed"
+                    sub.error_message = "qBittorrent 种子任务丢失且无法自动恢复 (FAILED_QB_MISSING)"
+                    sub.download_job.status = "error"
+                    await self._release_reservation(sub)
+                    logger.error(f"Submission #{sub.id} qB torrent permanently missing, terminated")
             return
 
         job = sub.download_job
@@ -159,8 +194,6 @@ class SubmissionPipelineService:
             await self._release_reservation(sub)
             logger.error(f"Submission #{sub.id} qB error state [{state}], terminating")
             return
-
-        now = datetime.now(timezone.utc)
 
         if downloaded > job.downloaded_bytes or dlspeed > 0:
             job.downloaded_bytes = downloaded
@@ -223,7 +256,7 @@ class SubmissionPipelineService:
                         await self._release_reservation(sub)
                         return
                 else:
-                    key = (parsed_season or 1, parsed_episode)
+                    key = (parsed_season if parsed_season is not None else 1, parsed_episode)
 
             if key not in candidates_by_episode:
                 candidates_by_episode[key] = []
@@ -235,7 +268,7 @@ class SubmissionPipelineService:
             await self._release_reservation(sub)
             return
 
-        # 核心修复 P0-1：若用户指定了目标集（如 S01E07），只允许生成并入库该目标单集，绝不允许顺手把整个包其他未预占集数一起入库发币！
+        # 核心单集限定：若用户指定了目标集（如 S01E07），只允许生成并入库该目标单集
         if sub.target_season is not None and sub.target_episode is not None:
             target_key = (sub.target_season, sub.target_episode)
             if target_key not in candidates_by_episode:
@@ -244,7 +277,6 @@ class SubmissionPipelineService:
                 await self._release_reservation(sub)
                 logger.warning(f"Submission #{sub.id} target mismatch: expected {target_key}, found {list(candidates_by_episode.keys())}")
                 return
-            # 严格过滤仅保留目标集
             candidates_by_episode = {target_key: candidates_by_episode[target_key]}
 
         items: List[SubmissionItem] = []
@@ -331,7 +363,7 @@ class SubmissionPipelineService:
         logger.info(f"Submission #{sub.id} -> WAITING_EMBY ({success_count}/{len(items)} delivered, Emby Refresh Triggered)")
 
     async def _handle_waiting_emby(self, sub: Submission):
-        """阶段 5: Emby 刮削确认、SAVEPOINT 局部事务回滚防护与全量累计发币"""
+        """阶段 5: Emby 刮削确认 (传递 expected_dest_path 真实路径匹配)、SAVEPOINT 局部事务回滚防护与全量累计发币"""
         stmt = select(SubmissionItem).where(SubmissionItem.submission_id == sub.id)
         res = await self.db.execute(stmt)
         items = res.scalars().all()
@@ -356,11 +388,13 @@ class SubmissionPipelineService:
             if item.status != "waiting_emby" or not item.dest_file:
                 continue
 
+            # 核心修复 P0-4: 传递 expected_dest_path 真实校验 Emby Path，确保确认的是本次交付的文件
             confirmed = await emby_client.verify_item_presence(
                 tmdb_id=sub.tmdb_id,
                 media_type=item.media_type,
                 season=item.season,
-                episode=item.episode
+                episode=item.episode,
+                expected_dest_path=item.dest_file
             )
 
             if settings.APP_ENV != "production" and not settings.EMBY_API_KEY:
@@ -392,18 +426,23 @@ class SubmissionPipelineService:
                     amount=item.reward_points,
                     event_type="upload_reward",
                     idempotency_key=idempotency_key,
-                    description=f"影视入库奖励: 《{sub.title}》 {f'S{item.season}E{item.episode}' if item.season else ''}",
+                    description=f"影视入库奖励: 《{sub.title}》 {f'S{item.season}E{item.episode}' if item.season is not None else ''}",
                     ref_type="submission_item",
                     ref_id=str(item.id)
                 )
                 item.is_rewarded = True
 
-                exact_bounties = await self.wanted_repo.find_exact_bounties(
-                    tmdb_id=sub.tmdb_id,
-                    media_type=item.media_type,
-                    season=item.season,
-                    episode=item.episode
-                )
+                # 核心修复 P0-6: 悬赏结算采用行锁查询，防止与取消退款产生并发双付
+                stmt_bounties = select(WantedTask).where(
+                    WantedTask.tmdb_id == sub.tmdb_id,
+                    WantedTask.media_type == item.media_type,
+                    WantedTask.season == item.season,
+                    WantedTask.episode == item.episode,
+                    WantedTask.status == "open"
+                ).with_for_update()
+                bounty_res = await self.db.execute(stmt_bounties)
+                exact_bounties = bounty_res.scalars().all()
+
                 for b in exact_bounties:
                     b.status = "completed"
                     b.claimant_id = sub.user_id

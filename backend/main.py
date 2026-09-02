@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
+import redis.asyncio as aioredis
 
 from backend.config import settings
 from backend.database import AsyncSessionLocal
@@ -134,7 +135,7 @@ async def health_check():
 @app.get("/api/health/ready")
 async def readiness_check(response: Response):
     """
-    真实生产就绪度探针: 探测数据库 SELECT 1、Redis ping 及核心外部依赖
+    真实生产就绪度探针: 探测数据库 SELECT 1、Redis 实时 PING 探测及核心外部依赖
     生产环境下若必需核心依赖缺失，严格返回 503 Service Unavailable (Fail-Closed)
     """
     db_ok = False
@@ -146,7 +147,9 @@ async def readiness_check(response: Response):
         logger.error(f"Database readiness probe failed: {e}")
         db_ok = False
 
-    redis_ok = redis_manager.is_available
+    # 实时执行 Redis PING 探测 (修复启动后中途掉线误判 Bug)
+    redis_ok = await redis_manager.ping()
+
     emby_configured = bool(settings.EMBY_SERVER_URL and settings.EMBY_API_KEY)
     tmdb_configured = bool(settings.TMDB_API_KEY)
 

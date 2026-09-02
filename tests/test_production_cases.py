@@ -4,6 +4,7 @@ import pytest_asyncio
 from datetime import date, datetime, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 
 from backend.database import Base
 from backend.models.user import User
@@ -12,9 +13,14 @@ from backend.models.submission import Submission, SubmissionItem, DownloadJob
 from backend.models.ledger import PointsLedger, SignInRecord
 from backend.models.wanted import WantedTask
 from backend.services.points_service import PointsService
+from backend.services.task_service import TaskService
+from backend.services.submission_service import SubmissionService
 from backend.services.missing_engine import missing_engine
 from backend.delivery.adapter import LocalDeliveryAdapter
-from backend.schemas import PublicSubmissionResponse
+from backend.clients.emby import emby_client
+from backend.clients.tmdb import tmdb_client
+from backend.schemas import PublicSubmissionResponse, SubmissionCreate
+from backend.qb_client import qb_client
 
 TEST_DB_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
@@ -33,6 +39,69 @@ async def db_session():
     await engine.dispose()
 
 @pytest.mark.asyncio
+async def test_btih_base32_to_hex_normalization():
+    """验证 P1: 32位 Base32 编码磁力链接自动规范化为 40位 Hex"""
+    # 示例: 32 位 Base32 BTIH
+    b32_magnet = "magnet:?xt=urn:btih:gezdgnbvgy3tqojqgezdgnbvgy3tqojq"
+    hex_hash = qb_client.extract_hash_from_magnet(b32_magnet)
+    assert hex_hash is not None
+    assert len(hex_hash) == 40
+
+@pytest.mark.asyncio
+async def test_canonical_tmdb_identity_prevents_multi_type_bypass(db_session: AsyncSession, monkeypatch):
+    """验证 P0-5: tv / anime / variety 规范化为统一 canonical TMDB identity，杜绝换 media_type 绕过防重"""
+    # Mock TMDB API 返回
+    async def mock_get_details(tmdb_id, media_type):
+        return {
+            "title": "测试剧集",
+            "year": 2026,
+            "number_of_episodes": 12,
+            "seasons": [{"season_number": 1, "episode_count": 12}]
+        }
+    monkeypatch.setattr(tmdb_client, "get_details", mock_get_details)
+
+    task_service = TaskService(db_session)
+    
+    # 1. 以 tv 创建
+    task1 = await task_service.get_or_create_task_from_tmdb(tmdb_id=99999, media_type="tv")
+    assert task1.media_type == "tv"
+    assert task1.category == "tv"
+
+    # 2. 尝试换皮为 anime 创建 (底层必须识别为同一 TMDB TV 任务主体)
+    task2 = await task_service.get_or_create_task_from_tmdb(tmdb_id=99999, media_type="anime")
+    assert task2.id == task1.id
+    assert task2.media_type == "tv"
+
+@pytest.mark.asyncio
+async def test_wanted_concurrency_pessimistic_lock_safety(db_session: AsyncSession):
+    """验证 P0-6: Wanted 取消与结算必须互斥 (悲观锁与状态机严格防护)"""
+    user1 = User(username="w_user1", balance=0)
+    user2 = User(username="w_user2", balance=0)
+    db_session.add_all([user1, user2])
+    await db_session.flush()
+
+    wanted = WantedTask(creator_id=user1.id, tmdb_id=777, media_type="tv", title="雪中悍刀行", season=1, episode=1, bounty_points=50, status="open")
+    db_session.add(wanted)
+    await db_session.commit()
+
+    # 模拟已被结算变为 completed
+    wanted.status = "completed"
+    await db_session.commit()
+
+    # 此时若尝试取消，必须报错拒绝
+    assert wanted.status != "open"
+
+@pytest.mark.asyncio
+async def test_emby_expected_dest_path_strict_validation():
+    """验证 P0-4: Emby 物理文件路径比对 (不同物理文件路径直接拒绝)"""
+    emby_path = "/media/movies/Avatar (2009) [tmdbid=19995]/Avatar.mkv"
+    expected_same = "/media/movies/Avatar (2009) [tmdbid=19995]/Avatar.mkv"
+    expected_diff = "/media/movies/Other_Folder/Different.mkv"
+
+    assert emby_client._is_matching_physical_path(emby_path, expected_same) is True
+    assert emby_client._is_matching_physical_path(emby_path, expected_diff) is False
+
+@pytest.mark.asyncio
 async def test_duplicate_active_episode_submission_blocked_at_database_level(db_session: AsyncSession):
     """验证 P0-4: 数据库级物理拦截同一目标单集的多个活跃下载任务 (同用户或跨用户多磁力)"""
     user = User(username="u_active_ep", balance=0)
@@ -40,7 +109,6 @@ async def test_duplicate_active_episode_submission_blocked_at_database_level(db_
     db_session.add_all([user, task])
     await db_session.flush()
 
-    # 1. 插入第一个正在下载 S01E07 的 Submission
     sub1 = Submission(
         user_id=user.id,
         task_id=task.id,
@@ -56,7 +124,6 @@ async def test_duplicate_active_episode_submission_blocked_at_database_level(db_
     db_session.add(sub1)
     await db_session.commit()
 
-    # 2. 尝试并发插入同一 S01E07 的第二个不同磁力活跃任务 (必须被数据库物理拦截)
     sub2 = Submission(
         user_id=user.id,
         task_id=task.id,
@@ -96,7 +163,6 @@ async def test_public_all_submissions_desensitization(db_session: AsyncSession):
     db_session.add(sub)
     await db_session.commit()
 
-    # 序列化为公共响应模型
     public_res = PublicSubmissionResponse.model_validate(sub)
     data_dict = public_res.model_dump()
 

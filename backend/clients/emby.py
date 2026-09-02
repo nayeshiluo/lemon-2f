@@ -97,6 +97,27 @@ class EmbyClient:
             logger.error(f"Emby get_series_episodes error: {e}")
             return []
 
+    @staticmethod
+    def _is_matching_physical_path(emby_path: str, expected_dest_path: str) -> bool:
+        """
+        深度比对物理路径：提取容器挂载根目录之下的相对路径与主文件名进行匹配
+        """
+        if not emby_path or not expected_dest_path:
+            return False
+        
+        # 1. 主文件名直接比对
+        if os.path.basename(emby_path) != os.path.basename(expected_dest_path):
+            return False
+
+        # 2. 相对目录结构比对 (例如 /media/movies/Title (2026)/Title.mkv 与 /media/movies/Title (2026)/Title.mkv)
+        norm_emby = os.path.normpath(emby_path).replace("\\", "/")
+        norm_exp = os.path.normpath(expected_dest_path).replace("\\", "/")
+        
+        # 提取末尾两级路径 (例如 Folder/File.mkv) 进行强校验
+        emby_parts = norm_emby.split("/")[-2:]
+        exp_parts = norm_exp.split("/")[-2:]
+        return emby_parts == exp_parts
+
     async def verify_item_presence(
         self,
         tmdb_id: int,
@@ -120,9 +141,8 @@ class EmbyClient:
                     sources = emby_item.get("MediaSources", [])
                     if sources:
                         emby_path = sources[0].get("Path", "")
-                # 校验文件名基准名一致
-                if emby_path and os.path.basename(emby_path) != os.path.basename(expected_dest_path):
-                    logger.warning(f"Emby movie path mismatch: found {emby_path}, expected {expected_dest_path}")
+                if not emby_path or not self._is_matching_physical_path(emby_path, expected_dest_path):
+                    logger.warning(f"Emby movie path mismatch: found [{emby_path}], expected [{expected_dest_path}]")
                     return False
             return True
         else:
@@ -140,8 +160,8 @@ class EmbyClient:
                             sources = ep.get("MediaSources", [])
                             if sources:
                                 emby_path = sources[0].get("Path", "")
-                        if emby_path and os.path.basename(emby_path) != os.path.basename(expected_dest_path):
-                            logger.warning(f"Emby episode path mismatch: found {emby_path}, expected {expected_dest_path}")
+                        if not emby_path or not self._is_matching_physical_path(emby_path, expected_dest_path):
+                            logger.warning(f"Emby episode path mismatch: found [{emby_path}], expected [{expected_dest_path}]")
                             return False
                     return True
             return False

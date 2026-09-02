@@ -644,7 +644,7 @@
 
         const loadStats = async () => {
           try {
-            const res = await fetch('/api/admin/stats', { headers: getAuthHeaders() })
+            const res = await fetch('/api/tasks/public-stats')
             if (res.ok) {
               stats.value = await res.json()
             }
