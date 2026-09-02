@@ -1,20 +1,25 @@
 import os
+import logging
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from backend.config import settings
 
-# 确保 SQLite 本地目录存在
-if settings.DATABASE_URL.startswith("sqlite"):
-    db_path = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
-    dir_name = os.path.dirname(db_path)
+logger = logging.getLogger("lemon_2f.database")
+
+# 自动处理 SQLite 路径
+db_url = settings.DATABASE_URL
+if db_url.startswith("sqlite"):
+    sqlite_path = db_url.replace("sqlite+aiosqlite:///", "")
+    dir_name = os.path.dirname(sqlite_path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
 
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    db_url,
     echo=settings.DEBUG,
-    future=True
+    future=True,
+    pool_pre_ping=True
 )
 
 AsyncSessionLocal = async_sessionmaker(
