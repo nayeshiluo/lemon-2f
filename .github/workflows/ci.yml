@@ -61,14 +61,17 @@ jobs:
       - name: Run Alembic Migrations against PostgreSQL
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgrespassword@localhost:5432/lemon_2f_test
+          APP_ENV: testing
+          SECRET_KEY: strong-ci-test-secret-key-32chars-minimum-safe
         run: |
           alembic upgrade head
           alembic check
 
-      - name: Run Automated Test Suite
+      - name: Run Automated Test Suite against PostgreSQL & Redis
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgrespassword@localhost:5432/lemon_2f_test
           REDIS_URL: redis://localhost:6379/0
-          APP_ENV: development
+          APP_ENV: testing
+          SECRET_KEY: strong-ci-test-secret-key-32chars-minimum-safe
         run: |
           PYTHONPATH=. pytest tests/ -v
