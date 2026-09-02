@@ -114,10 +114,10 @@ class SubmissionPipelineService:
             sub.download_job.last_progress_at = datetime.now(timezone.utc)
 
         sub.status = "downloading"
-        logger.info(f"Submission #{sub.id} -> DOWNLOADING (hash: {t_hash})")
+        logger.info(f"Submission #{sub.id} -> DOWNLOADING (hash: {t_hash}, savepath: {settings.QB_CONTAINER_DOWNLOAD_PATH})")
 
     async def _handle_downloading(self, sub: Submission):
-        """阶段 2: 进度监控与死种熔断"""
+        """阶段 2: 进度监控、异常捕获与死种熔断"""
         if not sub.torrent_hash or not sub.download_job:
             return
 
@@ -138,6 +138,15 @@ class SubmissionPipelineService:
         job.eta_seconds = eta
         job.save_path = info.get("save_path")
         job.content_path = content_path
+
+        # 致命异常状态即时熔断
+        if state in ["error", "missingFiles"]:
+            sub.status = "failed"
+            sub.error_message = f"qBittorrent 汇报下载致命异常状态: {state}"
+            job.status = "error"
+            await qb_client.delete_torrent(sub.torrent_hash, delete_files=True)
+            logger.error(f"Submission #{sub.id} qB error state [{state}], terminating")
+            return
 
         now = datetime.now(timezone.utc)
 
@@ -163,7 +172,7 @@ class SubmissionPipelineService:
             logger.info(f"Submission #{sub.id} -> INSPECTING (Download Complete)")
 
     async def _handle_inspecting(self, sub: Submission):
-        """阶段 3: 多视频文件扫描、季集解析与 FFprobe 深度结构化质检"""
+        """阶段 3: 多视频文件扫描、同集内去重 (选最高画质) 与 FFprobe 结构化质检"""
         task = await self._ensure_task_bound(sub)
         job = sub.download_job
         content_path = job.content_path if job else os.path.join(settings.QB_CONTAINER_DOWNLOAD_PATH, sub.title)
@@ -178,7 +187,9 @@ class SubmissionPipelineService:
             sub.error_message = "下载完成但未检索到有效主视频文件"
             return
 
-        items: List[SubmissionItem] = []
+        # 收集并质检全部视频文件
+        candidates_by_episode: Dict[Tuple[Optional[int], Optional[int]], List[Tuple[str, Dict[str, Any]]]] = {}
+
         for v_path in video_files:
             is_valid, reason, meta = await ffprobe_qc.inspect(v_path)
             if not is_valid:
@@ -187,23 +198,38 @@ class SubmissionPipelineService:
 
             parsed_season, parsed_episode = ffprobe_qc.parse_season_episode_from_filename(v_path)
             if sub.media_type == "movie":
-                s_num, e_num = None, None
+                key = (None, None)
             else:
                 if parsed_episode is None:
                     if task.total_items_count == 1:
-                        s_num, e_num = 1, 1
+                        key = (1, 1)
                     else:
                         sub.status = "rejected"
                         sub.error_message = f"文件 [{os.path.basename(v_path)}] 无法可靠解析集数，已拦截"
                         return
                 else:
-                    s_num = parsed_season or 1
-                    e_num = parsed_episode
+                    key = (parsed_season or 1, parsed_episode)
+
+            if key not in candidates_by_episode:
+                candidates_by_episode[key] = []
+            candidates_by_episode[key].append((v_path, meta))
+
+        if not candidates_by_episode:
+            sub.status = "rejected"
+            sub.error_message = "所有视频文件均未通过 FFprobe 质检"
+            return
+
+        items: List[SubmissionItem] = []
+        # 同集去重：若同一种子内存在多个同一集文件，优先选择体积最大 / 4K 高分辨率文件
+        for (s_num, e_num), file_list in candidates_by_episode.items():
+            # 按 is_4k 优先，再按 file_size 降序排序
+            file_list.sort(key=lambda x: (x[1].get("is_4k", False), x[1].get("file_size", 0)), reverse=True)
+            best_vpath, best_meta = file_list[0]
 
             t_item = await self.task_repo.get_item_by_season_episode(task.id, s_num, e_num)
 
             reward = (settings.MOVIE_UPLOAD_REWARD if sub.media_type == "movie" else settings.EPISODE_UPLOAD_REWARD)
-            if meta.get("is_4k"):
+            if best_meta.get("is_4k"):
                 reward += settings.RESOLUTION_4K_BONUS
 
             sub_item = SubmissionItem(
@@ -214,31 +240,26 @@ class SubmissionPipelineService:
                 season=s_num,
                 episode=e_num,
                 status="inspecting",
-                source_file=v_path,
-                file_size=meta.get("file_size", 0),
-                duration_seconds=meta.get("duration_seconds", 0.0),
-                width=meta.get("width", 0),
-                height=meta.get("height", 0),
-                video_codec=meta.get("video_codec"),
-                audio_codec=meta.get("audio_codec"),
-                bitrate_kbps=meta.get("bitrate_kbps", 0),
-                is_4k=meta.get("is_4k", False),
-                raw_qc_json=meta.get("raw_json"),
+                source_file=best_vpath,
+                file_size=best_meta.get("file_size", 0),
+                duration_seconds=best_meta.get("duration_seconds", 0.0),
+                width=best_meta.get("width", 0),
+                height=best_meta.get("height", 0),
+                video_codec=best_meta.get("video_codec"),
+                audio_codec=best_meta.get("audio_codec"),
+                bitrate_kbps=best_meta.get("bitrate_kbps", 0),
+                is_4k=best_meta.get("is_4k", False),
+                raw_qc_json=best_meta.get("raw_json"),
                 reward_points=reward
             )
             items.append(sub_item)
-
-        if not items:
-            sub.status = "rejected"
-            sub.error_message = "所有视频文件均未通过 FFprobe 质检"
-            return
 
         sub.total_items_count = len(items)
         self.db.add_all(items)
         await self.db.flush()
 
         sub.status = "delivering"
-        logger.info(f"Submission #{sub.id} -> DELIVERING ({len(items)} items)")
+        logger.info(f"Submission #{sub.id} -> DELIVERING ({len(items)} items inspected and deduped)")
 
     async def _handle_delivering(self, sub: Submission):
         """阶段 4: 规范化交付落盘并标记进入 waiting_emby 的时间戳"""
@@ -324,7 +345,6 @@ class SubmissionPipelineService:
                         t_item.status = "accepted"
                         t_item.accepted_submission_item_id = item.id
 
-                # 尝试提交 accepted 状态 (若遭遇并发唯一约束冲突，优雅捕获转为 rejected)
                 try:
                     await self.db.flush()
                 except IntegrityError:
@@ -333,7 +353,6 @@ class SubmissionPipelineService:
                     logger.warning(f"Item #{item.id} duplicate accepted collision, gracefully caught as REJECTED")
                     continue
 
-                # 幂等发放二楼币
                 idempotency_key = f"reward_subitem_{item.id}"
                 await self.points_service.add_points(
                     user_id=sub.user_id,
@@ -346,7 +365,6 @@ class SubmissionPipelineService:
                 )
                 item.is_rewarded = True
 
-                # 精准结算对应悬赏单
                 exact_bounties = await self.wanted_repo.find_exact_bounties(
                     tmdb_id=sub.tmdb_id,
                     media_type=item.media_type,
@@ -371,7 +389,7 @@ class SubmissionPipelineService:
                 item.status = "failed"
                 logger.warning(f"Item #{item.id} WAITING_EMBY timeout after {settings.EMBY_CONFIRM_TIMEOUT_MINUTES}m")
 
-        # 核心统计修复：全量准确累计该投稿所有 accepted 项的真实总奖励
+        # 准确累计该投稿所有已确认项的奖励总和
         total_cumulative_points = sum(it.reward_points for it in items if it.status == "accepted" and it.is_rewarded)
         accepted_cnt = sum(1 for it in items if it.status == "accepted")
         failed_cnt = sum(1 for it in items if it.status in ["failed", "rejected"])
