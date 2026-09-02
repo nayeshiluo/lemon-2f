@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN" class="dark">
+<html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LemonEmos 影视众包积分与全自动入库管理系统</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>二楼有请 · 影视众包入库与二楼币管理系统</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Vue 3 CDN -->
@@ -17,16 +17,12 @@
         extend: {
           colors: {
             brand: {
-              50: '#fffbeb',
-              100: '#fef3c7',
-              400: '#fbbf24',
-              500: '#f59e0b',
-              600: '#d97706',
+              pink: '#ff2a85',
               purple: '#8b5cf6',
-              pink: '#ec4899',
-              dark: '#0b0f19',
-              card: '#111827',
-              cardborder: '#1f2937'
+              cyan: '#06b6d4',
+              dark: '#0a0c16',
+              card: '#121629',
+              border: '#232a4e'
             }
           }
         }
@@ -34,394 +30,329 @@
     }
   </script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Noto+Sans+SC:wght@400;500;700&display=swap');
     body {
-      font-family: 'Inter', 'Noto Sans SC', sans-serif;
-      background-color: #0b0f19;
-      color: #f3f4f6;
+      font-family: 'Noto Sans SC', sans-serif;
+      background-color: #080914;
+      color: #e2e8f0;
+    }
+    .neon-text-pink {
+      color: #ff2a85;
+      text-shadow: 0 0 10px rgba(255, 42, 133, 0.6), 0 0 20px rgba(255, 42, 133, 0.3);
+    }
+    .neon-text-purple {
+      color: #a855f7;
+      text-shadow: 0 0 10px rgba(168, 85, 247, 0.6), 0 0 20px rgba(168, 85, 247, 0.3);
+    }
+    .neon-border-pink {
+      box-shadow: 0 0 15px rgba(255, 42, 133, 0.25);
+      border-color: #ff2a85;
     }
     .glass-card {
-      background: rgba(17, 24, 39, 0.75);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(18, 22, 41, 0.75);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(139, 92, 246, 0.2);
     }
     .glass-card:hover {
-      border-color: rgba(245, 158, 11, 0.3);
+      border-color: rgba(255, 42, 133, 0.4);
     }
-    .glow-amber {
-      box-shadow: 0 0 35px -5px rgba(245, 158, 11, 0.25);
-    }
-    .glow-purple {
-      box-shadow: 0 0 35px -5px rgba(139, 92, 246, 0.25);
-    }
-    /* Custom Scrollbar */
+    /* 自定义滚动条 */
     ::-webkit-scrollbar {
       width: 6px;
       height: 6px;
     }
     ::-webkit-scrollbar-track {
-      background: #0b0f19;
+      background: #080914;
     }
     ::-webkit-scrollbar-thumb {
-      background: #1f2937;
-      border-radius: 4px;
+      background: #232a4e;
+      border-radius: 3px;
     }
     ::-webkit-scrollbar-thumb:hover {
-      background: #374151;
-    }
-    .badge-gradient {
-      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      background: #8b5cf6;
     }
   </style>
 </head>
-<body class="min-h-screen antialiased flex flex-col selection:bg-amber-500 selection:text-black">
+<body class="min-h-screen flex flex-col selection:bg-pink-500 selection:text-white">
   <div id="app" class="flex-1 flex flex-col">
 
-    <!-- Top Navigation Bar -->
-    <header class="sticky top-0 z-50 glass-card border-b border-gray-800/80 px-4 lg:px-8 py-3.5 flex items-center justify-between">
-      <div class="flex items-center space-x-4">
-        <div class="flex items-center space-x-2.5">
-          <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-600 flex items-center justify-center shadow-lg shadow-amber-500/20 text-black font-bold text-lg">
-            🍋
+    <!-- 顶部导航栏 -->
+    <header class="border-b border-brand-border bg-brand-dark/90 backdrop-blur sticky top-0 z-40">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+        <div class="flex items-center space-x-3 cursor-pointer" @click="currentTab = 'home'">
+          <div class="relative w-10 h-10 rounded-xl overflow-hidden border border-brand-pink/50 shadow-lg shadow-pink-500/20 flex-shrink-0">
+            <img src="/assets/logo.jpg" alt="二楼有请" class="w-full h-full object-cover">
           </div>
           <div>
-            <div class="flex items-center space-x-2">
-              <span class="font-bold text-lg tracking-tight bg-gradient-to-r from-amber-400 via-orange-300 to-yellow-500 bg-clip-text text-transparent">LemonEmos</span>
-              <span class="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 font-medium">Preview v1.0</span>
-            </div>
-            <p class="text-[11px] text-gray-400 leading-none mt-0.5">Emby / Foam 众包积分与全自动入库系统</p>
+            <span class="text-xl font-black tracking-wider neon-text-pink font-['Orbitron']">二楼有请</span>
+            <span class="ml-2 text-xs px-2 py-0.5 rounded-full bg-purple-900/60 border border-purple-500/40 text-purple-300 font-medium">v2.0 影视众包</span>
           </div>
         </div>
 
-        <!-- Navigation Tabs -->
-        <nav class="hidden md:flex items-center space-x-1 pl-6">
-          <button v-for="tab in tabs" :key="tab.id" @click="currentTab = tab.id"
-            :class="[currentTab === tab.id ? 'bg-gray-800 text-amber-400 border border-gray-700 shadow-sm' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/50', 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center space-x-1.5']">
+        <!-- 导航菜单 -->
+        <nav class="hidden md:flex items-center space-x-1">
+          <button v-for="tab in navTabs" :key="tab.id"
+                  @click="currentTab = tab.id"
+                  :class="currentTab === tab.id ? 'bg-gradient-to-r from-pink-600/30 to-purple-600/30 text-white border border-brand-pink/40' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'"
+                  class="px-3.5 py-1.5 rounded-lg text-sm font-medium transition flex items-center space-x-1.5">
             <span>{{ tab.icon }}</span>
             <span>{{ tab.name }}</span>
           </button>
         </nav>
-      </div>
 
-      <!-- Right Action Area & Role Switcher -->
-      <div class="flex items-center space-x-3">
-        <!-- Role Switcher -->
-        <div class="flex items-center bg-gray-900/90 p-1 rounded-xl border border-gray-800">
-          <span class="text-[11px] text-gray-400 px-2 font-medium hidden sm:inline">🎭 角色模拟:</span>
-          <button v-for="role in roles" :key="role.id" @click="currentRole = role.id"
-            :class="[currentRole === role.id ? role.activeClass : 'text-gray-400 hover:text-gray-200', 'px-2.5 py-1 rounded-lg text-xs font-semibold transition-all']">
-            {{ role.name }}
-          </button>
-        </div>
+        <!-- 用户信息与操作 -->
+        <div class="flex items-center space-x-3">
+          <template v-if="user">
+            <!-- 二楼币资产胶囊 -->
+            <div class="flex items-center space-x-2 bg-gradient-to-r from-purple-950/60 to-slate-900 px-3 py-1.5 rounded-full border border-purple-500/30">
+              <span class="text-base">🪙</span>
+              <span class="text-sm font-bold text-yellow-400">{{ user.balance }}</span>
+              <span class="text-xs text-purple-300">二楼币</span>
+            </div>
 
-        <!-- User Profile Pill -->
-        <div class="flex items-center space-x-2.5 pl-2 border-l border-gray-800">
-          <div class="text-right hidden sm:block">
-            <div class="text-xs font-semibold text-gray-200 flex items-center justify-end space-x-1">
-              <span>{{ currentUser.name }}</span>
-              <span class="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-normal">{{ currentRoleLabel }}</span>
+            <!-- 签到按钮 -->
+            <button @click="handleSignIn"
+                    :disabled="isSigningIn"
+                    class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg shadow-pink-600/20 transition flex items-center space-x-1 disabled:opacity-50">
+              <span>🎁</span>
+              <span>{{ isSigningIn ? '签到中...' : '签到领币' }}</span>
+            </button>
+
+            <!-- 用户头像与菜单 -->
+            <div class="relative group">
+              <div class="flex items-center space-x-2 cursor-pointer bg-slate-800/60 hover:bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700/60">
+                <div class="w-6 h-6 rounded-full bg-gradient-to-tr from-pink-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white">
+                  {{ user.username.charAt(0).toUpperCase() }}
+                </div>
+                <span class="text-sm font-medium text-slate-200">{{ user.username }}</span>
+                <span v-if="user.role !== 'user'" class="text-[10px] bg-pink-500/20 border border-pink-500/40 text-pink-400 px-1 rounded uppercase font-mono">{{ user.role }}</span>
+              </div>
+              <div class="absolute right-0 mt-1 w-44 bg-brand-card border border-brand-border rounded-xl shadow-2xl py-1 hidden group-hover:block z-50">
+                <a @click.prevent="currentTab = 'ledger'" class="block px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 hover:text-white cursor-pointer">📜 二楼币明细</a>
+                <a @click.prevent="currentTab = 'submissions'" class="block px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 hover:text-white cursor-pointer">📦 我的投稿</a>
+                <div class="border-t border-slate-800 my-1"></div>
+                <a @click.prevent="logout" class="block px-4 py-2 text-xs text-red-400 hover:bg-slate-800 cursor-pointer">🚪 退出登录</a>
+              </div>
             </div>
-            <div class="text-[11px] text-amber-400 font-bold flex items-center justify-end space-x-1">
-              <span>🥕 {{ currentUser.carrots }} 胡萝卜</span>
-              <span class="text-gray-500 text-[10px]">| TG: @zmz1008</span>
-            </div>
-          </div>
-          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-amber-400 to-orange-600 flex items-center justify-center font-bold text-black text-xs ring-2 ring-amber-500/30">
-            五
-          </div>
+          </template>
+
+          <template v-else>
+            <button @click="showLoginModal = true"
+                    class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-sm font-semibold px-4 py-1.5 rounded-lg shadow-lg shadow-pink-600/30 transition">
+              Emby 原生登录
+            </button>
+          </template>
         </div>
       </div>
     </header>
 
-    <!-- Main Container -->
-    <main class="flex-1 max-w-7xl w-full mx-auto p-4 lg:p-6 space-y-6">
+    <!-- 主体内容区 -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
-      <!-- 1. DASHBOARD OVERVIEW -->
-      <div v-if="currentTab === 'dashboard'" class="space-y-6">
-        
-        <!-- Top Stats Banner -->
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div class="glass-card p-4 rounded-2xl relative overflow-hidden">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-medium text-gray-400">💰 个人积分资产</span>
-              <span class="text-xs text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full font-bold">+12.5 今日</span>
+      <!-- ================= Tab 1: 首页 / 仪表盘 ================= -->
+      <div v-if="currentTab === 'home'" class="space-y-8">
+        <!-- 顶部 Hero 横幅 -->
+        <div class="relative overflow-hidden rounded-2xl glass-card p-8 border border-purple-500/30 bg-gradient-to-r from-brand-card via-[#16142e] to-brand-card">
+          <div class="relative z-10 max-w-2xl space-y-4">
+            <div class="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-pink-500/10 border border-pink-500/30 text-pink-400 text-xs font-semibold">
+              <span>✨</span>
+              <span>Emby 媒体生态 · 众包入库与二楼币经济</span>
             </div>
-            <div class="mt-2 text-2xl lg:text-3xl font-black text-amber-400 tracking-tight">{{ currentUser.carrots }} <span class="text-xs font-normal text-gray-400">胡萝卜</span></div>
-            <p class="text-[11px] text-gray-500 mt-1">折合可兑换 142 天 Emby 4K 特权播放</p>
-            <div class="absolute -right-2 -bottom-2 text-6xl opacity-10">🥕</div>
+            <h1 class="text-3xl sm:text-4xl font-black text-white tracking-tight">
+              欢迎来到 <span class="neon-text-pink">二楼有请</span>
+            </h1>
+            <p class="text-slate-300 text-sm leading-relaxed">
+              全自动 TMDB 穿透查重、qB 离线极速调度、FFprobe 深度质检防假视频，一键规范化挂载入库，投稿即发 <span class="text-yellow-400 font-bold">二楼币</span>，畅享 VIP 专线与特权权益！
+            </p>
+            <div class="pt-2 flex flex-wrap gap-3">
+              <button @click="currentTab = 'dedup'" class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-sm font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-pink-600/30 transition flex items-center space-x-2">
+                <span>🔍</span>
+                <span>查重 & 投稿赚币</span>
+              </button>
+              <button @click="currentTab = 'shop'" class="bg-slate-800/80 hover:bg-slate-800 text-slate-200 border border-slate-700 text-sm font-semibold px-5 py-2.5 rounded-xl transition flex items-center space-x-2">
+                <span>🛍️</span>
+                <span>二楼商城兑换</span>
+              </button>
+            </div>
           </div>
-
-          <div class="glass-card p-4 rounded-2xl relative overflow-hidden">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-medium text-gray-400">🎬 贡献入库总数</span>
-              <span class="text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full font-bold">100% 成功率</span>
-            </div>
-            <div class="mt-2 text-2xl lg:text-3xl font-black text-gray-100 tracking-tight">26 <span class="text-xs font-normal text-gray-400">部 / 集</span></div>
-            <p class="text-[11px] text-gray-500 mt-1">含 19 部电影 + 7 集热门国漫番剧</p>
-            <div class="absolute -right-2 -bottom-2 text-6xl opacity-10">🎥</div>
-          </div>
-
-          <div class="glass-card p-4 rounded-2xl relative overflow-hidden">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-medium text-gray-400">⚡ Emby 全库规模</span>
-              <span class="text-xs text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded-full font-bold">同步就绪</span>
-            </div>
-            <div class="mt-2 text-2xl lg:text-3xl font-black text-gray-100 tracking-tight">14,892 <span class="text-xs font-normal text-gray-400">部媒体</span></div>
-            <p class="text-[11px] text-gray-500 mt-1">直连 Emby Server (zjw.586934.xyz)</p>
-            <div class="absolute -right-2 -bottom-2 text-6xl opacity-10">🖥️</div>
-          </div>
-
-          <div class="glass-card p-4 rounded-2xl relative overflow-hidden">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-medium text-gray-400">🚀 自动化下载队列</span>
-              <span class="text-xs text-purple-400 bg-purple-400/10 px-2 py-0.5 rounded-full font-bold">qB 运行中</span>
-            </div>
-            <div class="mt-2 text-2xl lg:text-3xl font-black text-purple-400 tracking-tight">1 <span class="text-xs font-normal text-gray-400">任务活跃</span></div>
-            <p class="text-[11px] text-gray-500 mt-1">RackNerd VPS (洛杉矶 2G/5TB 双轨转存)</p>
-            <div class="absolute -right-2 -bottom-2 text-6xl opacity-10">⚡</div>
+          <!-- 右侧 Logo 背景浮光 -->
+          <div class="absolute right-0 top-0 bottom-0 w-1/3 opacity-20 pointer-events-none overflow-hidden hidden sm:block">
+            <img src="/assets/logo.jpg" alt="" class="w-full h-full object-cover blur-sm">
           </div>
         </div>
 
-        <!-- Middle Action & Quick Deduplication Search -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          
-          <!-- Left 2 Cols: Quick Deduplication & Search -->
-          <div class="lg:col-span-2 glass-card p-6 rounded-2xl space-y-4 glow-amber">
-            <div class="flex items-center justify-between">
-              <div>
-                <h2 class="text-base font-bold text-gray-100 flex items-center space-x-2">
-                  <span>🔍 影视智能查重与元数据检测</span>
-                  <span class="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-normal">防刷分核心</span>
-                </h2>
-                <p class="text-xs text-gray-400 mt-0.5">上传或提交磁力前，系统会自动穿透 TMDB 与 Emby 进行毫秒级精准对账，杜绝重复！</p>
-              </div>
-            </div>
-
-            <!-- Search Bar -->
-            <div class="flex items-center space-x-2">
-              <div class="relative flex-1">
-                <input v-model="searchQuery" @keyup.enter="handleSearch"
-                  type="text" placeholder="输入电影名、剧集名、或粘贴磁力链接 magnet:?xt=urn:btih:..." 
-                  class="w-full bg-gray-900/90 border border-gray-700/80 rounded-xl px-4 py-3 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all" />
-              </div>
-              <button @click="handleSearch" class="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold text-sm px-6 py-3 rounded-xl transition-all shadow-md shadow-amber-500/20 flex items-center space-x-1.5">
-                <span>⚡</span>
-                <span>全库查重</span>
-              </button>
-            </div>
-
-            <!-- Search Result Card (Interactive Demo) -->
-            <div v-if="searchResult" class="mt-4 p-4 rounded-xl border" :class="searchResult.borderClass">
-              <div class="flex flex-col sm:flex-row gap-4 items-start">
-                <img :src="searchResult.poster" alt="poster" class="w-20 h-28 object-cover rounded-lg shadow-md border border-gray-700 shrink-0" />
-                <div class="flex-1 space-y-1.5">
-                  <div class="flex flex-wrap items-center justify-between gap-2">
-                    <div class="flex items-center space-x-2">
-                      <h3 class="font-bold text-base text-gray-100">{{ searchResult.title }}</h3>
-                      <span class="text-xs text-gray-400">({{ searchResult.year }})</span>
-                      <span :class="searchResult.statusBadgeClass" class="text-[11px] px-2 py-0.5 rounded font-semibold">{{ searchResult.statusText }}</span>
-                    </div>
-                    <!-- TMDB Link -->
-                    <a :href="searchResult.tmdbUrl" target="_blank" class="text-xs text-amber-400 hover:underline flex items-center space-x-1 bg-gray-900 px-2 py-1 rounded border border-gray-800">
-                      <span>🔗 TMDB ID: {{ searchResult.tmdbId }}</span>
-                      <span>↗</span>
-                    </a>
-                  </div>
-
-                  <p class="text-xs text-gray-400 line-clamp-2">{{ searchResult.overview }}</p>
-
-                  <!-- Status Details -->
-                  <div class="pt-2 flex flex-wrap items-center justify-between border-t border-gray-800 text-xs">
-                    <div class="text-gray-300">
-                      <span>{{ searchResult.embyStatusDesc }}</span>
-                    </div>
-                    <div v-if="searchResult.canUpload">
-                      <button @click="openUploadModal(searchResult)" class="bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/30 px-3 py-1 rounded-lg font-bold text-xs transition-all">
-                        🚀 提交并赚取 {{ searchResult.rewardPoints }} 胡萝卜
-                      </button>
-                    </div>
-                    <div v-else class="text-red-400 font-medium">
-                      🚫 库内已存在该清晰度，不可重复提交
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Quick Demo Tags -->
-            <div class="pt-2 flex items-center space-x-2 text-xs text-gray-400">
-              <span class="text-gray-500">试一试查重示例：</span>
-              <button @click="quickSearch('斩神之凡尘神域 第二季')" class="hover:text-amber-400 underline">斩神之凡尘神域 第二季 (缺第11集)</button>
-              <span>•</span>
-              <button @click="quickSearch('千门之群龙夺宝 2026')" class="hover:text-amber-400 underline">千门之群龙夺宝 (全库已有)</button>
-              <span>•</span>
-              <button @click="quickSearch('早春晴朗 2026')" class="hover:text-amber-400 underline">早春晴朗 (全新未入库)</button>
-            </div>
+        <!-- 核心统计概览 -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div class="glass-card p-5 rounded-xl space-y-1">
+            <span class="text-xs text-slate-400 font-medium">🪙 二楼币流通总量</span>
+            <div class="text-2xl font-black text-yellow-400">{{ stats.total_coins_circulation || 0 }} <span class="text-xs font-normal text-slate-400">币</span></div>
           </div>
-
-          <!-- Right 1 Col: Quick Action & Carrot Economy -->
-          <div class="glass-card p-6 rounded-2xl space-y-4 flex flex-col justify-between">
-            <div>
-              <div class="flex items-center justify-between">
-                <h3 class="font-bold text-sm text-gray-100 flex items-center space-x-1.5">
-                  <span>🥕 每日签到与积分转盘</span>
-                </h3>
-                <span class="text-[11px] text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded font-semibold">今日已领</span>
-              </div>
-              <p class="text-xs text-gray-400 mt-1">连续签到 7 天额外赠送 5 根胡萝卜！</p>
-              
-              <div class="mt-4 p-3.5 rounded-xl bg-gray-900/80 border border-gray-800 space-y-2">
-                <div class="flex items-center justify-between text-xs">
-                  <span class="text-gray-400">当前账号权限：</span>
-                  <span class="text-amber-400 font-bold">Emby 4K VIP 尊享版</span>
-                </div>
-                <div class="flex items-center justify-between text-xs">
-                  <span class="text-gray-400">账号到期时间：</span>
-                  <span class="text-gray-300">2027-01-15 (剩余 136 天)</span>
-                </div>
-                <div class="flex items-center justify-between text-xs">
-                  <span class="text-gray-400">可用积分：</span>
-                  <span class="text-amber-400 font-bold">28.5 🥕</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="space-y-2 pt-2">
-              <button @click="currentTab = 'upload'" class="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black font-bold text-xs py-2.5 rounded-xl transition-all shadow-md">
-                📥 提交新视频 / 磁力赚积分
-              </button>
-              <button @click="currentTab = 'shop'" class="w-full bg-gray-800 hover:bg-gray-700 text-gray-200 font-semibold text-xs py-2.5 rounded-xl border border-gray-700 transition-all">
-                🎁 前往积分商城兑换权益
-              </button>
-            </div>
+          <div class="glass-card p-5 rounded-xl space-y-1">
+            <span class="text-xs text-slate-400 font-medium">📦 成功入库影视</span>
+            <div class="text-2xl font-black text-green-400">{{ stats.completed_submissions || 0 }} <span class="text-xs font-normal text-slate-400">部</span></div>
+          </div>
+          <div class="glass-card p-5 rounded-xl space-y-1">
+            <span class="text-xs text-slate-400 font-medium">👥 注册众包用户</span>
+            <div class="text-2xl font-black text-purple-400">{{ stats.total_users || 0 }} <span class="text-xs font-normal text-slate-400">人</span></div>
+          </div>
+          <div class="glass-card p-5 rounded-xl space-y-1">
+            <span class="text-xs text-slate-400 font-medium">💾 存储可用空间</span>
+            <div class="text-2xl font-black text-cyan-400">{{ stats.disk_info ? stats.disk_info.free_gb : 0 }} <span class="text-xs font-normal text-slate-400">GB</span></div>
           </div>
         </div>
 
-        <!-- Bottom: Live Ingestion Stream & Recent Tasks -->
-        <div class="glass-card p-6 rounded-2xl space-y-4">
-          <div class="flex items-center justify-between">
-            <h3 class="font-bold text-sm text-gray-100 flex items-center space-x-2">
-              <span>⚡ 全站最新自动化入库动态 (实时对账)</span>
-              <span class="w-2 h-2 rounded-full bg-green-500 animate-ping"></span>
+        <!-- 最近入库与投稿动态 -->
+        <div class="glass-card rounded-2xl p-6 border border-brand-border">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-base font-bold text-white flex items-center space-x-2">
+              <span>🚀</span>
+              <span>全站最新入库流水线</span>
             </h3>
-            <span class="text-xs text-gray-500">双轨离线 + 自动去广告 + TMDB 标准化入库</span>
+            <button @click="loadPublicSubmissions" class="text-xs text-purple-400 hover:text-purple-300 font-medium">刷新动态</button>
           </div>
-
-          <div class="overflow-x-auto">
-            <table class="w-full text-left text-xs">
-              <thead class="text-gray-400 border-b border-gray-800">
-                <tr>
-                  <th class="py-2.5 font-medium">影片/剧集标题</th>
-                  <th class="py-2.5 font-medium">季集 / 分类</th>
-                  <th class="py-2.5 font-medium">提交用户</th>
-                  <th class="py-2.5 font-medium">入库状态</th>
-                  <th class="py-2.5 font-medium">奖励分值</th>
-                  <th class="py-2.5 font-medium text-right">时间</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-gray-800/60 text-gray-300">
-                <tr v-for="(item, idx) in recentTasks" :key="idx" class="hover:bg-gray-800/30">
-                  <td class="py-3 font-semibold text-gray-100 flex items-center space-x-2">
-                    <span>🎬</span>
-                    <span class="hover:text-amber-400 cursor-pointer">{{ item.title }}</span>
-                  </td>
-                  <td class="py-3 text-gray-400">{{ item.seasonEp }}</td>
-                  <td class="py-3 text-gray-300 flex items-center space-x-1.5">
-                    <span class="w-5 h-5 rounded-full bg-gray-800 text-[10px] flex items-center justify-center font-bold text-amber-400 border border-gray-700">{{ item.user[0] }}</span>
-                    <span>{{ item.user }}</span>
-                  </td>
-                  <td class="py-3">
-                    <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-green-500/10 text-green-400 border border-green-500/20">
-                      {{ item.status }}
-                    </span>
-                  </td>
-                  <td class="py-3 font-bold text-amber-400">+{{ item.points }} 🥕</td>
-                  <td class="py-3 text-gray-500 text-right">{{ item.time }}</td>
-                </tr>
-              </tbody>
-            </table>
+          <div v-if="publicSubmissions.length === 0" class="py-8 text-center text-sm text-slate-500">
+            暂无投稿动态，快去提交第一部影视吧！
           </div>
-        </div>
-
-      </div>
-
-      <!-- 2. UPLOAD & MAGNET SUBMISSION PIPELINE -->
-      <div v-if="currentTab === 'upload'" class="space-y-6">
-        <div class="glass-card p-6 rounded-2xl space-y-6">
-          <div class="border-b border-gray-800 pb-4 flex items-center justify-between">
-            <div>
-              <h2 class="text-lg font-bold text-gray-100">📥 众包提交与补片流水线</h2>
-              <p class="text-xs text-gray-400 mt-1">支持提交磁力链接或直接上传视频，系统会自动识别、去广告、重命名并入库结算！</p>
-            </div>
-            <div class="text-right">
-              <span class="text-xs text-amber-400 bg-amber-400/10 px-2.5 py-1 rounded-full font-bold">单次奖励 1~5 🥕</span>
-            </div>
-          </div>
-
-          <!-- Tabs: Magnet vs File Upload -->
-          <div class="flex items-center space-x-3">
-            <button @click="uploadMode = 'magnet'" :class="[uploadMode === 'magnet' ? 'bg-amber-500 text-black font-bold' : 'bg-gray-800 text-gray-300 font-medium', 'px-4 py-2 rounded-xl text-xs transition-all']">
-              🧲 磁力链接离线提交
-            </button>
-            <button @click="uploadMode = 'file'" :class="[uploadMode === 'file' ? 'bg-amber-500 text-black font-bold' : 'bg-gray-800 text-gray-300 font-medium', 'px-4 py-2 rounded-xl text-xs transition-all']">
-              📁 视频文件本地直传 (分片直传 R2/VPS)
-            </button>
-          </div>
-
-          <!-- Magnet Input Form -->
-          <div v-if="uploadMode === 'magnet'" class="space-y-4 bg-gray-900/60 p-5 rounded-xl border border-gray-800">
-            <div>
-              <label class="block text-xs font-semibold text-gray-300 mb-1.5">磁力链接 / Magnet URI</label>
-              <textarea v-model="magnetInput" rows="3" placeholder="magnet:?xt=urn:btih:..." class="w-full bg-gray-950 border border-gray-800 rounded-xl p-3 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 font-mono"></textarea>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label class="block text-xs font-semibold text-gray-300 mb-1.5">指定重命名模式</label>
-                <select class="w-full bg-gray-950 border border-gray-800 rounded-xl p-2.5 text-xs text-gray-200 focus:outline-none focus:border-amber-500">
-                  <option>🤖 智能自动改名 (TMDB 权威识别 + 自动季集匹配)</option>
-                  <option>✏️ 自定义指定名称 (如: 斩神之凡尘神域 S02E11.mp4)</option>
-                  <option>📦 保持原始文件名入库</option>
-                </select>
+          <div v-else class="space-y-3">
+            <div v-for="sub in publicSubmissions.slice(0, 5)" :key="sub.id" class="flex items-center justify-between bg-slate-900/60 p-3.5 rounded-xl border border-slate-800/80">
+              <div class="flex items-center space-x-3">
+                <span class="text-lg">{{ sub.media_type === 'movie' ? '🎬' : '📺' }}</span>
+                <div>
+                  <div class="text-sm font-bold text-slate-200">{{ sub.title }} <span v-if="sub.year" class="text-xs font-normal text-slate-400">({{ sub.year }})</span></div>
+                  <div class="text-xs text-slate-500">TMDB #{{ sub.tmdb_id }} · 提交于 {{ formatDate(sub.created_at) }}</div>
+                </div>
               </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-300 mb-1.5">做种与转存策略</label>
-                <select class="w-full bg-gray-950 border border-gray-800 rounded-xl p-2.5 text-xs text-gray-200 focus:outline-none focus:border-amber-500">
-                  <option>🚀 传完即删 (0占本地空间, 传完自动清理)</option>
-                  <option>🌱 永久保留做种 + 同步挂载 Emby</option>
-                </select>
+              <div class="flex items-center space-x-3">
+                <span :class="getStatusBadgeClass(sub.status)" class="text-xs px-2.5 py-1 rounded-full font-medium">
+                  {{ getStatusText(sub.status) }}
+                </span>
+                <span class="text-xs font-bold text-yellow-400">+{{ sub.reward_points }} 🪙</span>
               </div>
             </div>
-
-            <div class="pt-2 flex justify-end">
-              <button @click="submitMagnet" class="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold text-xs px-6 py-2.5 rounded-xl transition-all shadow-md shadow-amber-500/20">
-                🚀 立即提交并进入处理流水线
-              </button>
-            </div>
-          </div>
-
-          <!-- File Upload Drag Zone -->
-          <div v-if="uploadMode === 'file'" class="border-2 border-dashed border-gray-700 hover:border-amber-500 rounded-2xl p-8 text-center bg-gray-900/40 transition-all cursor-pointer">
-            <div class="text-4xl mb-2">📤</div>
-            <h4 class="font-bold text-sm text-gray-200">拖拽视频文件至此处，或点击浏览选择文件</h4>
-            <p class="text-xs text-gray-500 mt-1">支持 MP4, MKV, TS 格式，大文件自动采用 10MB 分片直传 Cloudflare R2 并校验 SHA1</p>
           </div>
         </div>
       </div>
 
-      <!-- 3. POINTS & SHOP (CARROT ECONOMY) -->
+      <!-- ================= Tab 2: 查重 & 投稿 ================= -->
+      <div v-if="currentTab === 'dedup'" class="space-y-6">
+        <div class="glass-card p-6 rounded-2xl border border-brand-border space-y-4">
+          <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+            <span>🔍</span>
+            <span>TMDB 权威检索 & Emby 穿透智能查重</span>
+          </h2>
+          <div class="flex gap-2">
+            <input v-model="searchQuery"
+                   @keyup.enter="handleSearchMedia"
+                   placeholder="输入电影或电视剧名称 (例如: 庆余年、奥本海默、周处除三害)..."
+                   class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-pink-500 transition">
+            <button @click="handleSearchMedia"
+                    :disabled="isSearching"
+                    class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white font-bold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-pink-600/20 disabled:opacity-50">
+              {{ isSearching ? '检索中...' : '搜索查重' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 搜索结果列表 -->
+        <div v-if="searchResults.length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div v-for="item in searchResults" :key="item.tmdb_id" class="glass-card rounded-2xl overflow-hidden border border-slate-800 hover:border-pink-500/50 transition flex flex-col">
+            <div class="h-44 bg-slate-900 relative overflow-hidden flex items-center justify-center">
+              <img v-if="item.poster_url" :src="item.poster_url" :alt="item.title" class="w-full h-full object-cover">
+              <div v-else class="text-slate-600 text-4xl">🎬</div>
+              <div class="absolute top-2 right-2 px-2 py-0.5 rounded bg-black/70 text-[10px] font-bold text-pink-400 border border-pink-500/30 uppercase">
+                {{ item.media_type }}
+              </div>
+            </div>
+            <div class="p-4 flex-1 flex flex-col justify-between space-y-3">
+              <div>
+                <h4 class="text-base font-bold text-white line-clamp-1">{{ item.title }}</h4>
+                <p class="text-xs text-slate-400 mt-1 line-clamp-2">{{ item.overview || '暂无简介' }}</p>
+              </div>
+              <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                <span class="text-xs text-slate-500">TMDB #{{ item.tmdb_id }} · {{ item.year || '未知年份' }}</span>
+                <button @click="openSubmitModal(item)"
+                        class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow transition">
+                  查重 & 提交
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= Tab 3: 我的投稿 & 任务 ================= -->
+      <div v-if="currentTab === 'submissions'" class="space-y-6">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+            <span>📦</span>
+            <span>我的影视投稿记录与任务流水线</span>
+          </h2>
+          <button @click="loadMySubmissions" class="text-xs text-purple-400 hover:text-purple-300 font-medium">刷新列表</button>
+        </div>
+
+        <div v-if="mySubmissions.length === 0" class="glass-card rounded-2xl p-12 text-center space-y-3">
+          <div class="text-4xl">📭</div>
+          <p class="text-sm text-slate-400">您还没有提交过任何影视，快去通过查重投稿赚取二楼币吧！</p>
+          <button @click="currentTab = 'dedup'" class="bg-gradient-to-r from-pink-600 to-purple-600 text-white text-xs font-bold px-4 py-2 rounded-xl">立即去投稿</button>
+        </div>
+
+        <div v-else class="space-y-4">
+          <div v-for="sub in mySubmissions" :key="sub.id" class="glass-card rounded-2xl p-5 border border-slate-800 space-y-3">
+            <div class="flex items-start justify-between">
+              <div>
+                <div class="flex items-center space-x-2">
+                  <span class="text-base font-bold text-white">{{ sub.title }}</span>
+                  <span class="text-xs text-slate-400" v-if="sub.year">({{ sub.year }})</span>
+                  <span class="text-[10px] uppercase bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded">{{ sub.media_type }}</span>
+                </div>
+                <div class="text-xs text-slate-500 mt-1">任务 ID: #{{ sub.id }} · 提交时间: {{ formatDate(sub.created_at) }}</div>
+              </div>
+              <div class="text-right">
+                <span :class="getStatusBadgeClass(sub.status)" class="text-xs px-2.5 py-1 rounded-full font-medium inline-block">
+                  {{ getStatusText(sub.status) }}
+                </span>
+                <div class="text-xs font-bold text-yellow-400 mt-1">结算: +{{ sub.reward_points }} 🪙</div>
+              </div>
+            </div>
+
+            <!-- 错误信息提示 -->
+            <div v-if="sub.error_message" class="text-xs bg-red-950/40 border border-red-800/60 text-red-300 p-2.5 rounded-lg">
+              ⚠️ {{ sub.error_message }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= Tab 4: 二楼商城 ================= -->
       <div v-if="currentTab === 'shop'" class="space-y-6">
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div v-for="item in shopItems" :key="item.id" class="glass-card p-5 rounded-2xl flex flex-col justify-between space-y-4">
-            <div>
-              <div class="text-3xl mb-2">{{ item.icon }}</div>
-              <h3 class="font-bold text-sm text-gray-100">{{ item.name }}</h3>
-              <p class="text-xs text-gray-400 mt-1">{{ item.desc }}</p>
+        <div class="glass-card p-6 rounded-2xl border border-brand-border flex items-center justify-between">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+              <span>🛍️</span>
+              <span>二楼权益商城</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-1">使用您通过签到、投稿赚取的二楼币，兑换 Emby VIP 会员与专属专线特权</p>
+          </div>
+          <div class="text-right">
+            <span class="text-xs text-slate-400">当前二楼币余额</span>
+            <div class="text-xl font-black text-yellow-400">{{ user ? user.balance : 0 }} 🪙</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div v-for="item in shopItems" :key="item.id" class="glass-card rounded-2xl p-5 border border-slate-800 flex flex-col justify-between space-y-4 hover:border-purple-500/50 transition">
+            <div class="space-y-2">
+              <div class="text-2xl">
+                {{ item.category === 'emby_vip' ? '👑' : item.category === 'line_speed' ? '⚡' : item.category === 'badge' ? '🎖️' : '🎁' }}
+              </div>
+              <h4 class="text-base font-bold text-white">{{ item.title }}</h4>
+              <p class="text-xs text-slate-400 leading-relaxed">{{ item.description }}</p>
             </div>
-            <div class="flex items-center justify-between pt-3 border-t border-gray-800">
-              <span class="text-sm font-bold text-amber-400">{{ item.price }} 🥕</span>
-              <button class="bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 px-3 py-1.5 rounded-xl text-xs font-bold transition-all">
+            <div class="pt-3 border-t border-slate-800/80 flex items-center justify-between">
+              <span class="text-sm font-black text-yellow-400">{{ item.cost_points }} 🪙</span>
+              <button @click="handleExchange(item)"
+                      :disabled="isExchanging"
+                      class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow transition disabled:opacity-50">
                 立即兑换
               </button>
             </div>
@@ -429,102 +360,65 @@
         </div>
       </div>
 
-      <!-- 4. TELEGRAM BOT SIMULATOR (HIGH-FIDELITY) -->
-      <div v-if="currentTab === 'bot'" class="space-y-6">
-        <div class="glass-card p-6 rounded-2xl max-w-2xl mx-auto space-y-4">
-          <div class="flex items-center justify-between border-b border-gray-800 pb-3">
-            <div class="flex items-center space-x-2.5">
-              <div class="w-8 h-8 rounded-full bg-amber-500 flex items-center justify-center font-bold text-black text-sm">🤖</div>
+      <!-- ================= Tab 5: 二楼币账本明细 ================= -->
+      <div v-if="currentTab === 'ledger'" class="space-y-6">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+            <span>📜</span>
+            <span>二楼币全量收支账本明细</span>
+          </h2>
+          <button @click="loadLedger" class="text-xs text-purple-400 hover:text-purple-300 font-medium">刷新账单</button>
+        </div>
+
+        <div class="glass-card rounded-2xl overflow-hidden border border-brand-border">
+          <div v-if="ledgerList.length === 0" class="py-12 text-center text-sm text-slate-500">
+            暂无二楼币收支记录
+          </div>
+          <div v-else class="divide-y divide-slate-800/80">
+            <div v-for="log in ledgerList" :key="log.id" class="p-4 flex items-center justify-between hover:bg-slate-800/30 transition">
               <div>
-                <h3 class="font-bold text-sm text-gray-100">@LemonEmos_OpsBot</h3>
-                <p class="text-[11px] text-green-400">● 运行中 (Telethon / Asyncio 原生 Inline)</p>
+                <div class="text-sm font-semibold text-slate-200">{{ log.description }}</div>
+                <div class="text-xs text-slate-500 mt-0.5">{{ formatDate(log.created_at) }} · 事件: {{ log.event_type }}</div>
               </div>
-            </div>
-            <span class="text-xs text-gray-500">Telegram Bot 交互模拟舱</span>
-          </div>
-
-          <!-- Chat Window -->
-          <div class="bg-gray-950/80 p-4 rounded-xl space-y-3 font-sans text-xs border border-gray-800">
-            <!-- Bot Message -->
-            <div class="flex items-start space-x-2">
-              <div class="w-6 h-6 rounded-full bg-amber-500 text-black flex items-center justify-center text-[10px] font-bold shrink-0">🍋</div>
-              <div class="bg-gray-900 p-3 rounded-2xl rounded-tl-none border border-gray-800 space-y-2 max-w-md">
-                <p class="font-bold text-amber-400">🎉 【 LemonEmos 影视众包系统 】</p>
-                <p class="text-gray-300">欢迎爸爸！当前已成功绑定 Emby 账号：`张五`</p>
-                <div class="text-[11px] text-gray-400 space-y-0.5">
-                  <p>🥕 <b>可用胡萝卜</b>：`28.5 根`</p>
-                  <p>🎬 <b>已贡献媒体</b>：`26 部`</p>
-                  <p>👑 <b>当前身份</b>：`最高权限 (Owner)`</p>
-                </div>
-                <!-- Inline Keyboards -->
-                <div class="grid grid-cols-2 gap-1.5 pt-1">
-                  <button class="bg-gray-800 hover:bg-gray-700 py-1.5 px-2 rounded-lg text-[11px] text-gray-200 font-medium">🔍 全库查重 /find</button>
-                  <button class="bg-gray-800 hover:bg-gray-700 py-1.5 px-2 rounded-lg text-[11px] text-gray-200 font-medium">📥 提交磁力 /upload</button>
-                  <button class="bg-gray-800 hover:bg-gray-700 py-1.5 px-2 rounded-lg text-[11px] text-gray-200 font-medium">🎁 积分商城 /shop</button>
-                  <button class="bg-gray-800 hover:bg-gray-700 py-1.5 px-2 rounded-lg text-[11px] text-gray-200 font-medium">⚙️ 管理控制台 /admin</button>
-                </div>
+              <div class="text-right">
+                <span :class="log.amount >= 0 ? 'text-green-400' : 'text-red-400'" class="text-sm font-black">
+                  {{ log.amount >= 0 ? '+' : '' }}{{ log.amount }} 🪙
+                </span>
+                <div class="text-[11px] text-slate-400">结余: {{ log.balance_after }}</div>
               </div>
             </div>
           </div>
-
-          <p class="text-[11px] text-gray-500 text-center">用户可以在 Telegram 中直接发送磁力链接或种子，Bot 自动触发查重、下载与入库结算！</p>
         </div>
       </div>
 
-      <!-- 5. ADMIN & OWNER CONSOLE -->
+      <!-- ================= Tab 6: 管理员控制台 ================= -->
       <div v-if="currentTab === 'admin'" class="space-y-6">
-        <div class="glass-card p-6 rounded-2xl space-y-6">
-          <div class="border-b border-gray-800 pb-4 flex items-center justify-between">
-            <div>
-              <h2 class="text-lg font-bold text-gray-100 flex items-center space-x-2">
-                <span>⚙️ 系统管理控制台</span>
-                <span class="text-xs px-2 py-0.5 rounded bg-purple-500/20 text-purple-400 font-normal">最高权限 / 管理员专属</span>
-              </h2>
-              <p class="text-xs text-gray-400 mt-1">全局参数调优、Emby 双向同步、积分总账与防刷风控</p>
-            </div>
-            <div class="flex items-center space-x-2">
-              <button class="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition-all shadow-md">
-                🔄 一键触发 Emby 媒体库深度扫描
-              </button>
-            </div>
+        <div class="glass-card p-6 rounded-2xl border border-brand-pink/30 space-y-4">
+          <div class="flex items-center justify-between">
+            <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+              <span>👑</span>
+              <span>二楼有请 · 管理员运维大屏</span>
+            </h2>
+            <button @click="handleRefreshEmby" class="bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow">
+              🔄 触发 Emby 全量扫描
+            </button>
           </div>
-
-          <!-- Settings Grid -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="bg-gray-900/60 p-4 rounded-xl border border-gray-800 space-y-3">
-              <h3 class="font-bold text-xs text-amber-400">🔌 Emby / Foam 核心端点配置</h3>
-              <div class="space-y-2 text-xs">
-                <div>
-                  <label class="text-gray-400">Emby Server 内部/反代地址</label>
-                  <input type="text" value="https://zjw.586934.xyz" class="w-full bg-gray-950 border border-gray-800 rounded-lg p-2 mt-1 text-gray-300 font-mono" />
-                </div>
-                <div>
-                  <label class="text-gray-400">Emby API Key (最高权限令牌)</label>
-                  <input type="password" value="********************************" class="w-full bg-gray-950 border border-gray-800 rounded-lg p-2 mt-1 text-gray-300 font-mono" />
-                </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+            <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800">
+              <div class="text-xs text-slate-400">磁盘总容量 / 已用 / 剩余</div>
+              <div class="text-base font-bold text-slate-200 mt-1" v-if="stats.disk_info">
+                {{ stats.disk_info.total_gb }}G / {{ stats.disk_info.used_gb }}G / <span class="text-green-400">{{ stats.disk_info.free_gb }}G</span>
               </div>
             </div>
-
-            <div class="bg-gray-900/60 p-4 rounded-xl border border-gray-800 space-y-3">
-              <h3 class="font-bold text-xs text-amber-400">🥕 积分与奖励规则引擎</h3>
-              <div class="grid grid-cols-2 gap-2 text-xs">
-                <div>
-                  <label class="text-gray-400">全新电影入库奖励</label>
-                  <input type="number" value="5" class="w-full bg-gray-950 border border-gray-800 rounded-lg p-2 mt-1 text-gray-300 font-bold" />
-                </div>
-                <div>
-                  <label class="text-gray-400">单集番剧/剧集补片</label>
-                  <input type="number" value="1" class="w-full bg-gray-950 border border-gray-800 rounded-lg p-2 mt-1 text-gray-300 font-bold" />
-                </div>
-                <div>
-                  <label class="text-gray-400">4K 原画洗版奖励</label>
-                  <input type="number" value="3" class="w-full bg-gray-950 border border-gray-800 rounded-lg p-2 mt-1 text-gray-300 font-bold" />
-                </div>
-                <div>
-                  <label class="text-gray-400">假片/刷分扣除惩罚</label>
-                  <input type="number" value="10" class="w-full bg-gray-950 border border-gray-800 rounded-lg p-2 mt-1 text-red-400 font-bold" />
-                </div>
+            <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800">
+              <div class="text-xs text-slate-400">系统入库总成功率</div>
+              <div class="text-base font-bold text-cyan-400 mt-1">
+                {{ stats.total_submissions > 0 ? Math.round((stats.completed_submissions / stats.total_submissions) * 100) : 100 }}%
               </div>
+            </div>
+            <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800">
+              <div class="text-xs text-slate-400">当前活跃众包成员</div>
+              <div class="text-base font-bold text-pink-400 mt-1">{{ stats.total_users }} 人</div>
             </div>
           </div>
         </div>
@@ -532,150 +426,441 @@
 
     </main>
 
-    <!-- Footer -->
-    <footer class="border-t border-gray-800/80 py-4 text-center text-xs text-gray-500">
-      LemonEmos Media Ecosystem • 开源 GitHub 预备版 • Designed for 张五爸爸
+    <!-- 登录模态框 -->
+    <div v-if="showLoginModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div class="glass-card max-w-md w-full p-6 rounded-2xl border border-brand-pink/50 shadow-2xl space-y-5">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <div class="w-8 h-8 rounded-lg overflow-hidden border border-brand-pink">
+              <img src="/assets/logo.jpg" alt="" class="w-full h-full object-cover">
+            </div>
+            <h3 class="text-lg font-bold text-white">登录二楼有请</h3>
+          </div>
+          <button @click="showLoginModal = false" class="text-slate-400 hover:text-white">✕</button>
+        </div>
+
+        <div class="space-y-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">Emby 或系统用户名</label>
+            <input v-model="loginForm.username" type="text" placeholder="输入 Emby 用户名" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-pink-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">密码</label>
+            <input v-model="loginForm.password" @keyup.enter="handleLogin" type="password" placeholder="输入密码" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-pink-500">
+          </div>
+          <p class="text-[11px] text-slate-500">
+            * 支持使用您的 Emby 原生账号密码穿透鉴权，或默认账号登录。
+          </p>
+        </div>
+
+        <div class="flex gap-2">
+          <button @click="showLoginModal = false" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold py-2.5 rounded-xl">取消</button>
+          <button @click="handleLogin" :disabled="isLoggingIn" class="flex-1 bg-gradient-to-r from-pink-600 to-purple-600 text-white text-sm font-bold py-2.5 rounded-xl disabled:opacity-50">
+            {{ isLoggingIn ? '登录中...' : '立即登录' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 投稿模态框 -->
+    <div v-if="showSubmitModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div class="glass-card max-w-lg w-full p-6 rounded-2xl border border-brand-pink/50 shadow-2xl space-y-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-base font-bold text-white flex items-center space-x-2">
+            <span>📥</span>
+            <span>提交影视磁力入库</span>
+          </h3>
+          <button @click="showSubmitModal = false" class="text-slate-400 hover:text-white">✕</button>
+        </div>
+
+        <div v-if="targetMedia" class="p-3 bg-slate-900/90 rounded-xl border border-slate-800 flex space-x-3 items-center">
+          <img v-if="targetMedia.poster_url" :src="targetMedia.poster_url" class="w-12 h-16 object-cover rounded">
+          <div>
+            <div class="text-sm font-bold text-white">{{ targetMedia.title }} <span v-if="targetMedia.year" class="text-xs text-slate-400">({{ targetMedia.year }})</span></div>
+            <div class="text-xs text-pink-400 mt-0.5">TMDB #{{ targetMedia.tmdb_id }} · 预计奖励: {{ targetMedia.media_type === 'movie' ? 60 : 20 }} 二楼币</div>
+          </div>
+        </div>
+
+        <div class="space-y-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">磁力链接 (Magnet URI)</label>
+            <textarea v-model="submitMagnet" rows="3" placeholder="magnet:?xt=urn:btih:..." class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs text-white font-mono focus:outline-none focus:border-pink-500"></textarea>
+          </div>
+          <p class="text-[11px] text-slate-400">
+            * 提交后系统将通过 qB 极速拉取并执行 FFprobe 质检，入库后二楼币自动打入您的账户。
+          </p>
+        </div>
+
+        <div class="flex gap-2">
+          <button @click="showSubmitModal = false" class="flex-1 bg-slate-800 text-slate-300 text-sm font-semibold py-2.5 rounded-xl">取消</button>
+          <button @click="handleSubmitMagnet" :disabled="isSubmitting" class="flex-1 bg-gradient-to-r from-pink-600 to-purple-600 text-white text-sm font-bold py-2.5 rounded-xl disabled:opacity-50">
+            {{ isSubmitting ? '提交中...' : '确认开启入库' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 页脚 -->
+    <footer class="border-t border-brand-border bg-brand-dark py-6 text-center text-xs text-slate-500">
+      <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+        <div>🍋 二楼有请 · 影视众包入库与二楼币管理系统</div>
+        <div>Designed with ❤️ for Emby & Media Community</div>
+      </div>
     </footer>
+
   </div>
 
   <script>
-    const { createApp, ref, computed } = Vue;
+    const { createApp, ref, onMounted, computed } = Vue
 
     createApp({
       setup() {
-        const currentTab = ref('dashboard');
-        const currentRole = ref('owner');
-        const searchQuery = ref('');
-        const searchResult = ref(null);
-        const uploadMode = ref('magnet');
-        const magnetInput = ref('');
+        const currentTab = ref('home')
+        const user = ref(null)
+        const showLoginModal = ref(false)
+        const showSubmitModal = ref(false)
+        const isLoggingIn = ref(false)
+        const isSigningIn = ref(false)
+        const isSearching = ref(false)
+        const isSubmitting = ref(false)
+        const isExchanging = ref(false)
 
-        const tabs = [
-          { id: 'dashboard', name: '控制台总览', icon: '📊' },
-          { id: 'upload', name: '众包补片流水线', icon: '📥' },
-          { id: 'shop', name: '积分商城与权益', icon: '🎁' },
-          { id: 'bot', name: 'Telegram Bot 模拟', icon: '🤖' },
-          { id: 'admin', name: '管理员后台', icon: '⚙️' }
-        ];
+        const loginForm = ref({ username: '', password: '' })
+        const searchQuery = ref('')
+        const searchResults = ref([])
+        const targetMedia = ref(null)
+        const submitMagnet = ref('')
 
-        const roles = [
-          { id: 'owner', name: '👑 最高权限 (Owner)', activeClass: 'bg-amber-500 text-black font-bold shadow' },
-          { id: 'admin', name: '🛡️ 管理员 (Admin)', activeClass: 'bg-purple-600 text-white font-bold shadow' },
-          { id: 'user', name: '👤 普通用户 (User)', activeClass: 'bg-blue-600 text-white font-bold shadow' }
-        ];
+        const stats = ref({ total_users: 0, total_submissions: 0, completed_submissions: 0, total_coins_circulation: 0, disk_info: null })
+        const publicSubmissions = ref([])
+        const mySubmissions = ref([])
+        const shopItems = ref([])
+        const ledgerList = ref([])
 
-        const currentUser = ref({
-          name: '张五',
-          carrots: 28.5,
-          role: 'owner'
-        });
-
-        const currentRoleLabel = computed(() => {
-          if (currentRole.value === 'owner') return '👑 最高权限';
-          if (currentRole.value === 'admin') return '🛡️ 管理员';
-          return '👤 众包用户';
-        });
-
-        const recentTasks = [
-          { title: '斩神之凡尘神域 S02E11', seasonEp: '第 2 季 第 11 集', user: '张五', status: '已成功入库并挂载', points: 1, time: '刚刚' },
-          { title: '早春晴朗 (2026)', seasonEp: '全 16 集 完整版', user: 'BLUE', status: '已成功入库并挂载', points: 16, time: '10分钟前' },
-          { title: '千门之群龙夺宝 (2026)', seasonEp: '4K 杜比视界 电影', user: '红猫', status: '已成功入库并挂载', points: 5, time: '1小时前' },
-          { title: 'GuAn S01', seasonEp: '4K 优酷独播 剧集', user: '挽歌', status: '已成功入库并挂载', points: 8, time: '3小时前' }
-        ];
-
-        const shopItems = [
-          { id: 1, name: 'Emby 4K 播放特权 30 天', desc: '解锁三大运营商直连优选线路，4K 原画秒开无卡顿', price: 10, icon: '⚡' },
-          { id: 2, name: '专属求片加急权 (VIP)', desc: '提交的磁力优先分配专属 10Gbps 高速转存通道', price: 5, icon: '🚀' },
-          { id: 3, name: '积分大转盘抽奖 (1次)', desc: '最高可抽取 50 根胡萝卜或 1 年 Emby 免费观影券', price: 2, icon: '🎰' }
-        ];
-
-        const handleSearch = () => {
-          if (!searchQuery.value) return;
-          const q = searchQuery.value.trim();
-          
-          if (q.includes('斩神')) {
-            searchResult.value = {
-              title: '斩神之凡尘神域',
-              year: '2024-2026',
-              tmdbId: '232145',
-              tmdbUrl: 'https://www.themoviedb.org/tv/232145',
-              poster: 'https://image.tmdb.org/t/p/w500/m5zY5pA8qUv6QvEa9QxWk9Qx.jpg',
-              overview: '若黯夜终临，吾必立于万万人前，横刀向渊，血染天穹！林七夜守护人世间的热血番剧。',
-              borderClass: 'border-amber-500/40 bg-amber-500/5',
-              statusBadgeClass: 'bg-amber-500/20 text-amber-400 border border-amber-500/30',
-              statusText: '⚠️ 库内存在，但缺失第 S02E11 集',
-              embyStatusDesc: 'Emby 当前已有第 1 季全集 + 第 2 季前 10 集，正缺少第 11 集！',
-              canUpload: true,
-              rewardPoints: 1
-            };
-          } else if (q.includes('千门')) {
-            searchResult.value = {
-              title: '千门之群龙夺宝',
-              year: '2026',
-              tmdbId: '1289412',
-              tmdbUrl: 'https://www.themoviedb.org/movie/1289412',
-              poster: 'https://image.tmdb.org/t/p/w500/4KThousandGates.jpg',
-              overview: '民国上海滩各方势力暗流涌动，千门高手设局夺宝的传奇动作大片。',
-              borderClass: 'border-red-500/40 bg-red-500/5',
-              statusBadgeClass: 'bg-red-500/20 text-red-400 border border-red-500/30',
-              statusText: '❌ Emby 库内已有完整 4K 资源',
-              embyStatusDesc: '该影片已于 2026-09-01 入库 (2160p DDP5.1-ZmWeb)，无需重复上传。',
-              canUpload: false,
-              rewardPoints: 0
-            };
-          } else {
-            searchResult.value = {
-              title: q.replace('2026', '').trim() || '早春晴朗',
-              year: '2026',
-              tmdbId: '389211',
-              tmdbUrl: 'https://www.themoviedb.org/tv/389211',
-              poster: 'https://image.tmdb.org/t/p/w500/earlySpring.jpg',
-              overview: '2026 年全新都市情感励志剧集，全网首播。',
-              borderClass: 'border-green-500/40 bg-green-500/5',
-              statusBadgeClass: 'bg-green-500/20 text-green-400 border border-green-500/30',
-              statusText: '✅ 全新剧集 (库内完全缺失)',
-              embyStatusDesc: 'Emby 库内暂无该剧，提交完整季可获得最高众包奖励！',
-              canUpload: true,
-              rewardPoints: 16
-            };
+        const navTabs = computed(() => {
+          const list = [
+            { id: 'home', name: '首页大屏', icon: '🏠' },
+            { id: 'dedup', name: '查重投稿', icon: '🔍' },
+            { id: 'submissions', name: '我的任务', icon: '📦' },
+            { id: 'shop', name: '二楼商城', icon: '🛍️' },
+            { id: 'ledger', name: '二楼币账本', icon: '📜' },
+          ]
+          if (user.value && (user.value.role === 'admin' || user.value.role === 'owner')) {
+            list.push({ id: 'admin', name: '管理面板', icon: '👑' })
           }
-        };
+          return list
+        })
 
-        const quickSearch = (text) => {
-          searchQuery.value = text;
-          handleSearch();
-        };
+        const getAuthHeaders = () => {
+          const token = localStorage.getItem('lemon_token')
+          return token ? { 'Authorization': `Bearer ${token}` } : {}
+        }
 
-        const submitMagnet = () => {
-          alert('🚀 磁力已成功提交！后台已自动注入 qB 离线引擎，预计 3 分钟后完成去广告并挂载入库！');
-          currentTab.value = 'dashboard';
-        };
+        const fetchUserProfile = async () => {
+          const token = localStorage.getItem('lemon_token')
+          if (!token) return
+          try {
+            const res = await fetch('/api/auth/me', { headers: getAuthHeaders() })
+            if (res.ok) {
+              user.value = await res.json()
+            } else {
+              localStorage.removeItem('lemon_token')
+              user.value = null
+            }
+          } catch (e) {
+            console.error(e)
+          }
+        }
 
-        const openUploadModal = (res) => {
-          currentTab.value = 'upload';
-          magnetInput.value = `magnet:?xt=urn:btih:mock_hash_for_${res.title}`;
-        };
+        const handleLogin = async () => {
+          if (!loginForm.value.username || !loginForm.value.password) {
+            alert('请输入用户名与密码')
+            return
+          }
+          isLoggingIn.value = true
+          try {
+            const res = await fetch('/api/auth/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(loginForm.value)
+            })
+            const data = await res.json()
+            if (res.ok) {
+              localStorage.setItem('lemon_token', data.access_token)
+              await fetchUserProfile()
+              showLoginModal.value = false
+              alert(`欢迎回来，${data.username}！当前拥有 ${data.balance} 二楼币。`)
+            } else {
+              alert(data.detail || '登录失败')
+            }
+          } catch (e) {
+            alert('网络请求异常: ' + e.message)
+          } finally {
+            isLoggingIn.value = false
+          }
+        }
+
+        const logout = () => {
+          localStorage.removeItem('lemon_token')
+          user.value = null
+          currentTab.value = 'home'
+        }
+
+        const handleSignIn = async () => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          isSigningIn.value = true
+          try {
+            const res = await fetch('/api/points/sign-in', {
+              method: 'POST',
+              headers: getAuthHeaders()
+            })
+            const data = await res.json()
+            if (res.ok) {
+              user.value.balance = data.new_balance
+              alert(`🎉 ${data.message}`)
+            } else {
+              alert(data.detail || '签到失败')
+            }
+          } catch (e) {
+            alert('请求异常: ' + e.message)
+          } finally {
+            isSigningIn.value = false
+          }
+        }
+
+        const loadStats = async () => {
+          try {
+            const res = await fetch('/api/admin/stats', { headers: getAuthHeaders() })
+            if (res.ok) {
+              stats.value = await res.json()
+            }
+          } catch (e) {}
+        }
+
+        const loadPublicSubmissions = async () => {
+          try {
+            const res = await fetch('/api/submissions/all', { headers: getAuthHeaders() })
+            if (res.ok) {
+              publicSubmissions.value = await res.json()
+            }
+          } catch (e) {}
+        }
+
+        const loadMySubmissions = async () => {
+          if (!user.value) return
+          try {
+            const res = await fetch('/api/submissions/', { headers: getAuthHeaders() })
+            if (res.ok) {
+              mySubmissions.value = await res.json()
+            }
+          } catch (e) {}
+        }
+
+        const loadShopItems = async () => {
+          try {
+            const res = await fetch('/api/shop/items', { headers: getAuthHeaders() })
+            if (res.ok) {
+              shopItems.value = await res.json()
+            }
+          } catch (e) {}
+        }
+
+        const loadLedger = async () => {
+          if (!user.value) return
+          try {
+            const res = await fetch('/api/points/ledger', { headers: getAuthHeaders() })
+            if (res.ok) {
+              ledgerList.value = await res.json()
+            }
+          } catch (e) {}
+        }
+
+        const handleSearchMedia = async () => {
+          if (!searchQuery.value.trim()) return
+          isSearching.value = true
+          try {
+            const res = await fetch(`/api/dedup/search?q=${encodeURIComponent(searchQuery.value.trim())}`, {
+              headers: getAuthHeaders()
+            })
+            if (res.ok) {
+              const data = await res.json()
+              searchResults.value = data.results || []
+            }
+          } catch (e) {
+            alert('检索异常: ' + e.message)
+          } finally {
+            isSearching.value = false
+          }
+        }
+
+        const openSubmitModal = (item) => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          targetMedia.value = item
+          submitMagnet.value = ''
+          showSubmitModal.value = true
+        }
+
+        const handleSubmitMagnet = async () => {
+          if (!submitMagnet.value.trim()) {
+            alert('请输入磁力链接')
+            return
+          }
+          isSubmitting.value = true
+          try {
+            const payload = {
+              tmdb_id: targetMedia.value.tmdb_id,
+              media_type: targetMedia.value.media_type,
+              title: targetMedia.value.title,
+              original_title: targetMedia.value.original_title,
+              year: targetMedia.value.year,
+              poster_path: targetMedia.value.poster_url,
+              magnet_uri: submitMagnet.value.trim()
+            }
+            const res = await fetch('/api/submissions/', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              body: JSON.stringify(payload)
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert(`✅ 投稿成功！任务 #${data.id} 已进入自动下载与质检流水线。`)
+              showSubmitModal.value = false
+              currentTab.value = 'submissions'
+              loadMySubmissions()
+            } else {
+              alert(data.detail || '提交失败')
+            }
+          } catch (e) {
+            alert('请求异常: ' + e.message)
+          } finally {
+            isSubmitting.value = false
+          }
+        }
+
+        const handleExchange = async (item) => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          if (user.value.balance < item.cost_points) {
+            alert(`二楼币不足！您目前拥有 ${user.value.balance} 币，需要 ${item.cost_points} 币。`)
+            return
+          }
+          if (!confirm(`确认消耗 ${item.cost_points} 二楼币兑换【${item.title}】吗？`)) return
+
+          isExchanging.value = true
+          try {
+            const res = await fetch('/api/shop/exchange', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              body: JSON.stringify({ item_id: item.id })
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert(data.message)
+              user.value.balance = data.new_balance
+            } else {
+              alert(data.detail || '兑换失败')
+            }
+          } catch (e) {
+            alert('兑换异常: ' + e.message)
+          } finally {
+            isExchanging.value = false
+          }
+        }
+
+        const handleRefreshEmby = async () => {
+          try {
+            const res = await fetch('/api/admin/refresh-emby', { method: 'POST', headers: getAuthHeaders() })
+            const data = await res.json()
+            alert(data.message)
+          } catch (e) {
+            alert('操作异常: ' + e.message)
+          }
+        }
+
+        const getStatusBadgeClass = (status) => {
+          switch (status) {
+            case 'completed': return 'bg-green-500/20 text-green-400 border border-green-500/30'
+            case 'downloading': return 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+            case 'inspecting': return 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+            case 'mounting': return 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
+            case 'failed':
+            case 'rejected': return 'bg-red-500/20 text-red-400 border border-red-500/30'
+            default: return 'bg-slate-700/50 text-slate-300'
+          }
+        }
+
+        const getStatusText = (status) => {
+          const map = {
+            pending: '排队中',
+            downloading: '下载中',
+            inspecting: 'FFprobe 质检中',
+            mounting: '落盘入库中',
+            completed: '已入库发币',
+            failed: '失败',
+            rejected: '质检未通过'
+          }
+          return map[status] || status
+        }
+
+        const formatDate = (dateStr) => {
+          if (!dateStr) return ''
+          const d = new Date(dateStr)
+          return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+        }
+
+        onMounted(async () => {
+          await fetchUserProfile()
+          loadStats()
+          loadPublicSubmissions()
+          loadShopItems()
+        })
 
         return {
           currentTab,
-          currentRole,
+          user,
+          navTabs,
+          showLoginModal,
+          showSubmitModal,
+          isLoggingIn,
+          isSigningIn,
+          isSearching,
+          isSubmitting,
+          isExchanging,
+          loginForm,
           searchQuery,
-          searchResult,
-          uploadMode,
-          magnetInput,
-          tabs,
-          roles,
-          currentUser,
-          currentRoleLabel,
-          recentTasks,
-          shopItems,
-          handleSearch,
-          quickSearch,
+          searchResults,
+          targetMedia,
           submitMagnet,
-          openUploadModal
-        };
+          stats,
+          publicSubmissions,
+          mySubmissions,
+          shopItems,
+          ledgerList,
+          handleLogin,
+          logout,
+          handleSignIn,
+          handleSearchMedia,
+          openSubmitModal,
+          handleSubmitMagnet,
+          handleExchange,
+          handleRefreshEmby,
+          loadMySubmissions,
+          loadLedger,
+          loadPublicSubmissions,
+          getStatusBadgeClass,
+          getStatusText,
+          formatDate
+        }
       }
-    }).mount('#app');
+    }).mount('#app')
   </script>
 </body>
 </html>

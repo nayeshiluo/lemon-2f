@@ -1,17 +1,77 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
+import os
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
-from config import settings
-from auth import authenticate_with_emby, create_access_token, get_current_user, require_role
-from tmdb import query_tmdb_metadata
-from emby import check_emby_has_media, trigger_emby_library_refresh
-from pipeline import process_media_submission
-from security import SecurityManager
+from backend.config import settings
+from backend.database import init_db
+from backend.pipeline import pipeline
+from backend.bot import create_bot_app
+from backend.routes import auth, dedup, submissions, points, wanted, shop, admin
 
-app = FastAPI(title="LemonEmos API", version="1.0.0", description="Emby/Foam 众包积分与全自动入库系统 API")
+# 日志初始化
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - [%(levelname)s] - [%(name)s] - %(message)s"
+)
+logger = logging.getLogger("lemon_2f.main")
 
+# 后台定时调度任务
+async def background_pipeline_worker():
+    logger.info("Background Submission Pipeline Worker started")
+    while True:
+        try:
+            await pipeline.process_active_tasks()
+        except Exception as e:
+            logger.error(f"Error in background pipeline loop: {e}")
+        await asyncio.sleep(15) # 每 15 秒轮询一次状态机
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动阶段: 初始化数据库表
+    logger.info(f"Starting {settings.SYSTEM_TITLE} v{settings.APP_VERSION}")
+    await init_db()
+    
+    # 启动后台下载质检工作流任务
+    worker_task = asyncio.create_task(background_pipeline_worker())
+    
+    # 启动 Telegram Bot (若已配置 Token)
+    bot_app = create_bot_app()
+    if bot_app:
+        try:
+            await bot_app.initialize()
+            await bot_app.start()
+            await bot_app.updater.start_polling()
+            logger.info("Telegram Bot service started successfully")
+        except Exception as e:
+            logger.error(f"Failed to start Telegram Bot: {e}")
+
+    yield
+    
+    # 关闭阶段
+    if bot_app:
+        try:
+            await bot_app.updater.stop()
+            await bot_app.stop()
+            await bot_app.shutdown()
+        except Exception:
+            pass
+
+    worker_task.cancel()
+    logger.info("Shutdown completed")
+
+app = FastAPI(
+    title=settings.SYSTEM_TITLE,
+    version=settings.APP_VERSION,
+    description="二楼有请 · 基于 Emby 原生生态的众包入库、质检、二楼币经济与自动化管理系统",
+    lifespan=lifespan
+)
+
+# 跨域设置
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,74 +80,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
+# 注册 API 路由
+app.include_router(auth.router)
+app.include_router(dedup.router)
+app.include_router(submissions.router)
+app.include_router(points.router)
+app.include_router(wanted.router)
+app.include_router(shop.router)
+app.include_router(admin.router)
 
-class SubmitRequest(BaseModel):
-    magnet: Optional[str] = None
-    custom_name: Optional[str] = None
+# 静态前端资源挂载
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+assets_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+
+if os.path.exists(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+if os.path.exists(frontend_dist):
+    app.mount("/static", StaticFiles(directory=frontend_dist), name="static")
+
+    @app.get("/")
+    async def serve_index():
+        index_file = os.path.join(frontend_dist, "index.html")
+        if os.path.exists(index_file):
+            return FileResponse(index_file)
+        return {"message": "Frontend index.html not found"}
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "app": settings.APP_NAME, "env": settings.APP_ENV}
-
-@app.post("/api/auth/login")
-async def login(req: LoginRequest):
-    auth_res = await authenticate_with_emby(req.username, req.password)
-    if not auth_res:
-        # 允许演示账号登录
-        if req.username in ["admin", "张五", "demo"]:
-            role = "owner" if req.username in ["张五", "admin"] else "user"
-            token = create_access_token({"sub": req.username, "role": role, "user_id": "u_demo_001"})
-            return {"token": token, "user": {"username": req.username, "role": role, "carrots": 28.5}}
-        raise HTTPException(status_code=401, detail="Emby 用户名或密码错误")
-
-    role = "owner" if auth_res.get("is_admin") else "user"
-    token = create_access_token({"sub": auth_res["username"], "role": role, "user_id": auth_res["user_id"]})
-    return {"token": token, "user": {"username": auth_res["username"], "role": role, "carrots": 10.0}}
-
-@app.get("/api/media/check")
-async def check_media(query: str = Query(..., description="影片/剧集名称或磁力链接")):
-    if not SecurityManager.check_rate_limit("client_global", limit_count=30):
-        raise HTTPException(status_code=429, detail="请求过于频繁，请稍候再试")
-
-    tmdb_info = await query_tmdb_metadata(query)
-    if not tmdb_info or not tmdb_info.get("success"):
-        return {"success": False, "message": "TMDB 未检索到匹配的影视元数据"}
-
-    emby_res = await check_emby_has_media(
-        tmdb_id=tmdb_info["tmdb_id"],
-        media_type=tmdb_info["media_type"],
-        season=tmdb_info["season"],
-        episode=tmdb_info["episode"]
-    )
-
     return {
-        "success": True,
-        "tmdb": tmdb_info,
-        "emby": emby_res,
-        "can_upload": not emby_res.get("has_exact_episode", False),
-        "reward_points": settings.POINTS_NEW_MOVIE if tmdb_info["media_type"] == "movie" else settings.POINTS_EPISODE
+        "status": "healthy",
+        "app": settings.APP_NAME,
+        "currency": settings.CURRENCY_NAME,
+        "version": settings.APP_VERSION
     }
-
-@app.post("/api/media/submit")
-async def submit_media(req: SubmitRequest, user: Dict[str, Any] = Depends(get_current_user)):
-    res = await process_media_submission(
-        magnet=req.magnet or "",
-        custom_name=req.custom_name or "",
-        username=user["username"],
-        user_role=user["role"]
-    )
-    if not res.get("success"):
-        raise HTTPException(status_code=400, detail=res.get("message"))
-    return res
-
-@app.post("/api/admin/emby/scan")
-async def trigger_scan(user: Dict[str, Any] = Depends(require_role(["owner", "admin"]))):
-    ok = await trigger_emby_library_refresh()
-    return {"success": ok, "message": "Emby 媒体库深度扫描已触发！"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)

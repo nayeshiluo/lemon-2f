@@ -1,48 +1,69 @@
 import os
-from pydantic_settings import BaseSettings
+from typing import List, Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 class Settings(BaseSettings):
-    # App Info
-    APP_NAME: str = "LemonEmos"
-    APP_ENV: str = os.getenv("APP_ENV", "production")
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "lemon_emos_super_secret_jwt_key_2026")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 Days
-
-    # Emby / Foam Integration
-    EMBY_SERVER_URL: str = os.getenv("EMBY_SERVER_URL", "https://zjw.586934.xyz")
-    EMBY_API_KEY: str = os.getenv("EMBY_API_KEY", "")
-    FOAM_API_URL: str = os.getenv("FOAM_API_URL", "")
-    FOAM_API_TOKEN: str = os.getenv("FOAM_API_TOKEN", "")
-
-    # TMDB API
-    TMDB_API_KEY: str = os.getenv("TMDB_API_KEY", "15d2ea6d0dc1d476efbca3eba2b9bbfb")
-    TMDB_BASE_URL: str = "https://api.themoviedb.org/3"
-
-    # qBittorrent Downloader
-    QB_HOST: str = os.getenv("QB_HOST", "127.0.0.1")
-    QB_PORT: int = int(os.getenv("QB_PORT", "8999"))
-    QB_USERNAME: str = os.getenv("QB_USERNAME", "admin")
-    QB_PASSWORD: str = os.getenv("QB_PASSWORD", "adminadmin")
-    QB_SAVE_PATH: str = os.getenv("QB_SAVE_PATH", "/downloads")
-    EMBY_MEDIA_PATH: str = os.getenv("EMBY_MEDIA_PATH", "/media")
-
+    APP_NAME: str = "二楼有请 (Lemon 2F)"
+    APP_VERSION: str = "2.0.0"
+    DEBUG: bool = False
+    
+    # 品牌与币种定义
+    SYSTEM_TITLE: str = "二楼有请 · 影视众包入库与积分系统"
+    CURRENCY_NAME: str = "二楼币"
+    CURRENCY_SYMBOL: str = "🪙"
+    
+    # 服务端网络
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    SECRET_KEY: str = Field(default="lemon-2f-secret-key-change-in-production-2026", env="SECRET_KEY")
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 7 days
+    
+    # 数据库配置 (支持 SQLite / PostgreSQL)
+    DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./data/lemon_2f.db", env="DATABASE_URL")
+    
+    # Emby 配置
+    EMBY_SERVER_URL: str = Field(default="http://localhost:8096", env="EMBY_SERVER_URL")
+    EMBY_API_KEY: str = Field(default="", env="EMBY_API_KEY")
+    EMBY_PUBLIC_URL: Optional[str] = Field(default=None, env="EMBY_PUBLIC_URL")
+    
+    # TMDB 配置
+    TMDB_API_KEY: str = Field(default="", env="TMDB_API_KEY")
+    TMDB_LANGUAGE: str = "zh-CN"
+    
+    # qBittorrent 配置
+    QB_HOST: str = Field(default="http://localhost:8080", env="QB_HOST")
+    QB_USERNAME: str = Field(default="admin", env="QB_USERNAME")
+    QB_PASSWORD: str = Field(default="adminadmin", env="QB_PASSWORD")
+    QB_CATEGORY: str = "lemon_2f"
+    QB_SAVE_PATH: str = Field(default="/downloads/lemon_2f", env="QB_SAVE_PATH")
+    
+    # 影视入库目标挂载路径 (本地或 NFS/SMB 共享目录)
+    MEDIA_MOVIES_PATH: str = Field(default="/media/movies", env="MEDIA_MOVIES_PATH")
+    MEDIA_TV_PATH: str = Field(default="/media/tv", env="MEDIA_TV_PATH")
+    
+    # 质检与风控
+    MIN_VIDEO_DURATION_SECONDS: int = 30  # 最短正片时长拦截（防假视频/短片）
+    MIN_DISK_FREE_PERCENT: float = 10.0   # 磁盘最低可用百分比熔断
+    DEAD_TORRENT_TIMEOUT_MINUTES: int = 15 # 死种超时自动清理时间
+    
+    # 二楼币经济规则
+    INITIAL_USER_COINS: int = 100         # 新用户初始赠送
+    SIGN_IN_MIN_COINS: int = 5           # 每日签到基础最低
+    SIGN_IN_MAX_COINS: int = 20          # 每日签到基础最高
+    MOVIE_UPLOAD_REWARD: int = 60        # 电影入库奖励
+    EPISODE_UPLOAD_REWARD: int = 20      # 剧集单集入库奖励
+    RESOLUTION_4K_BONUS: int = 30        # 4K原画洗版额外加成
+    
     # Telegram Bot
-    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_ADMIN_IDS: str = os.getenv("TELEGRAM_ADMIN_IDS", "7996620779")  # Comma separated
-    TELEGRAM_OWNER_ID: int = int(os.getenv("TELEGRAM_OWNER_ID", "7996620779"))
-
-    # Redis Cache & Queue
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
-    # Points & Economy
-    POINTS_NEW_MOVIE: float = float(os.getenv("POINTS_NEW_MOVIE", "5.0"))
-    POINTS_EPISODE: float = float(os.getenv("POINTS_EPISODE", "1.0"))
-    POINTS_4K_UPGRADE: float = float(os.getenv("POINTS_4K_UPGRADE", "3.0"))
-    POINTS_PENALTY_FRAUD: float = float(os.getenv("POINTS_PENALTY_FRAUD", "10.0"))
-
-    # Security & Storage Watermark
-    MIN_DISK_FREE_PERCENT: float = 15.0
-    MIN_MOVIE_SIZE_MB: int = 500
-    MIN_EPISODE_SIZE_MB: int = 80
+    TG_BOT_TOKEN: Optional[str] = Field(default=None, env="TG_BOT_TOKEN")
+    TG_ADMIN_IDS: List[int] = Field(default_factory=list, env="TG_ADMIN_IDS")
+    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 settings = Settings()

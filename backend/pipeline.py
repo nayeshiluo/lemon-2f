@@ -1,60 +1,251 @@
 import os
-import shutil
+import json
+import logging
 import asyncio
-import requests
-from typing import Dict, Any
-from config import settings
-from tmdb import query_tmdb_metadata
-from emby import check_emby_has_media, trigger_emby_library_refresh
-from security import SecurityManager
+from datetime import datetime, timezone
+from sqlalchemy import select, update
+from backend.database import AsyncSessionLocal
+from backend.models import Submission, DownloadTask, User, PointsLedger, WantedEpisode
+from backend.qb_client import qb_client
+from backend.ffprobe_inspector import ffprobe_inspector
+from backend.auto_mount import auto_mounter
+from backend.emby_client import emby_client
+from backend.config import settings
 
-async def process_media_submission(magnet: str, custom_name: str, username: str, user_role: str) -> Dict[str, Any]:
-    """
-    全自动众包提交与原子入库结算流水线
-    """
-    # 1. 磁盘水位检测
-    if not SecurityManager.check_disk_watermark(settings.QB_SAVE_PATH):
-        return {"success": False, "message": "服务器磁盘空间不足 (<15%)，已触发熔断保护，暂停新任务接入。"}
+logger = logging.getLogger("lemon_2f.pipeline")
 
-    # 2. TMDB 元数据刮削
-    tmdb_info = await query_tmdb_metadata(custom_name or magnet)
-    if not tmdb_info or not tmdb_info.get("success"):
-        return {"success": False, "message": "TMDB 无法识别该影片/剧集，请核对名称。"}
+class SubmissionPipeline:
+    """全自动下载、质检、入库与积分原子结算核心流水线"""
 
-    tmdb_id = tmdb_info.get("tmdb_id")
-    m_type = tmdb_info.get("media_type")
-    season = tmdb_info.get("season", 1)
-    ep = tmdb_info.get("episode")
+    @staticmethod
+    async def process_active_tasks():
+        """定时轮询处理所有活跃任务的状态机推进"""
+        async with AsyncSessionLocal() as session:
+            # 查找所有非终态的投稿任务
+            stmt = select(Submission).where(
+                Submission.status.in_(["pending", "downloading", "inspecting", "mounting"])
+            )
+            result = await session.execute(stmt)
+            submissions = result.scalars().all()
 
-    # 3. 申请防并发锁
-    lock_key = f"lock:tmdb_{tmdb_id}_s{season}_e{ep}"
-    if not SecurityManager.acquire_lock(lock_key):
-        return {"success": False, "message": "该剧集已有其他用户正在提交处理中，暂不可重复抢单。"}
+            for sub in submissions:
+                try:
+                    if sub.status == "pending":
+                        await SubmissionPipeline._handle_pending(session, sub)
+                    elif sub.status == "downloading":
+                        await SubmissionPipeline._handle_downloading(session, sub)
+                    elif sub.status == "inspecting":
+                        await SubmissionPipeline._handle_inspecting(session, sub)
+                    elif sub.status == "mounting":
+                        await SubmissionPipeline._handle_mounting(session, sub)
+                except Exception as e:
+                    logger.error(f"Error processing submission {sub.id}: {e}")
+            
+            await session.commit()
 
-    try:
-        # 4. Emby 库内查重
-        emby_check = await check_emby_has_media(tmdb_id, m_type, season, ep)
-        if emby_check.get("status") == "exists_full":
-            return {"success": False, "message": "Emby 库内已存在该资源，无需重复提交。"}
+    @staticmethod
+    async def _handle_pending(session, sub: Submission):
+        """阶段 1: 提交磁力到 qBittorrent 并初始化下载任务"""
+        # 提取 hash
+        t_hash = qb_client.extract_hash_from_magnet(sub.magnet_uri)
+        if not t_hash:
+            sub.status = "rejected"
+            sub.error_message = "无法解析有效的磁力链接 hash"
+            return
 
-        # 5. 模拟下载、质检、转存与 Emby 入库 (核心流程)
-        # 实际生产环境这里会向 qBittorrent 提交哈希并监听完成
-        await asyncio.sleep(1.5)
+        sub.torrent_hash = t_hash
+        success = await qb_client.add_torrent(urls=sub.magnet_uri)
+        if not success:
+            logger.warning(f"qB add_torrent failed for submission {sub.id}, will retry next tick")
+            return
 
-        # 6. 计算奖励积分
-        reward_points = settings.POINTS_NEW_MOVIE if m_type == "movie" else settings.POINTS_EPISODE
+        # 创建或更新 DownloadTask 记录
+        task_stmt = select(DownloadTask).where(DownloadTask.submission_id == sub.id)
+        task_res = await session.execute(task_stmt)
+        task = task_res.scalar_one_or_none()
 
-        # 7. 触发 Emby 媒体库扫描
-        await trigger_emby_library_refresh()
+        if not task:
+            task = DownloadTask(
+                submission_id=sub.id,
+                torrent_hash=t_hash,
+                status="downloading"
+            )
+            session.add(task)
+        else:
+            task.status = "downloading"
 
-        return {
-            "success": True,
-            "title": tmdb_info.get("title"),
-            "season": season,
-            "episode": ep,
-            "points_earned": reward_points,
-            "message": f"🎉 成功挂载入库至 Emby 官方影视库！获得 {reward_points} 根胡萝卜 🥕"
-        }
-    finally:
-        # 释放并发锁
-        SecurityManager.release_lock(lock_key)
+        sub.status = "downloading"
+        logger.info(f"Submission {sub.id} -> downloading (hash: {t_hash})")
+
+    @staticmethod
+    async def _handle_downloading(session, sub: Submission):
+        """阶段 2: 监控 qBittorrent 下载进度与死种熔断"""
+        if not sub.torrent_hash:
+            return
+
+        info = await qb_client.get_torrent_info(sub.torrent_hash)
+        if not info:
+            return
+
+        task_stmt = select(DownloadTask).where(DownloadTask.submission_id == sub.id)
+        task_res = await session.execute(task_stmt)
+        task = task_res.scalar_one_or_none()
+        if not task:
+            return
+
+        progress = float(info.get("progress", 0.0)) * 100.0
+        speed = int(info.get("dlspeed", 0))
+        eta = int(info.get("eta", 0))
+        save_path = info.get("save_path", "")
+        content_path = info.get("content_path", "")
+        state = info.get("state", "")
+
+        task.progress = round(progress, 2)
+        task.download_speed = speed
+        task.eta = eta
+        task.download_path = content_path or save_path
+
+        # 死种熔断检测：若速度为 0 且持续超过阈值
+        if speed == 0 and progress < 100.0:
+            task.zero_speed_ticks += 1
+            # 假设每 30 秒轮询一次，30 次约为 15 分钟
+            if task.zero_speed_ticks > (settings.DEAD_TORRENT_TIMEOUT_MINUTES * 2):
+                sub.status = "failed"
+                sub.error_message = f"死种超时熔断 ({settings.DEAD_TORRENT_TIMEOUT_MINUTES}分钟无下载速度)"
+                task.status = "stopped"
+                await qb_client.delete_torrent(sub.torrent_hash, delete_files=True)
+                logger.warning(f"Dead torrent melted for submission {sub.id}")
+                return
+        else:
+            task.zero_speed_ticks = 0
+
+        # 下载完成判断
+        if progress >= 100.0 or state in ["uploading", "pausedUP", "completed"]:
+            sub.status = "inspecting"
+            task.status = "completed"
+            logger.info(f"Submission {sub.id} -> inspecting")
+
+    @staticmethod
+    async def _handle_inspecting(session, sub: Submission):
+        """阶段 3: FFprobe 深度质检防骗分"""
+        task_stmt = select(DownloadTask).where(DownloadTask.submission_id == sub.id)
+        task_res = await session.execute(task_stmt)
+        task = task_res.scalar_one_or_none()
+
+        download_path = task.download_path if task else None
+        if not download_path or not os.path.exists(download_path):
+            # 若路径不存在，回退查找
+            download_path = os.path.join(settings.QB_SAVE_PATH, sub.title)
+
+        # 找到实际视频文件进行质检
+        target_video = auto_mounter.find_largest_video_file(download_path) if download_path else None
+        if not target_video:
+            sub.status = "failed"
+            sub.error_message = "下载完成但未检测到有效视频文件"
+            return
+
+        is_valid, reason, meta = await ffprobe_inspector.inspect(target_video)
+        if not is_valid:
+            sub.status = "rejected"
+            sub.error_message = f"质检拦截: {reason}"
+            logger.warning(f"Submission {sub.id} QC rejected: {reason}")
+            # 清理垃圾文件
+            if sub.torrent_hash:
+                await qb_client.delete_torrent(sub.torrent_hash, delete_files=True)
+            return
+
+        # 质检合格，记录元数据并准备入库
+        sub.ffprobe_info = json.dumps(meta, ensure_ascii=False)
+        sub.file_size = os.path.getsize(target_video)
+        
+        # 计算基础奖励与 4K 加成
+        base_reward = settings.MOVIE_UPLOAD_REWARD if sub.media_type == "movie" else settings.EPISODE_UPLOAD_REWARD
+        if meta.get("is_4k"):
+            base_reward += settings.RESOLUTION_4K_BONUS
+        sub.reward_points = base_reward
+
+        sub.status = "mounting"
+        logger.info(f"Submission {sub.id} -> mounting (reward: {base_reward} 二楼币)")
+
+    @staticmethod
+    async def _handle_mounting(session, sub: Submission):
+        """阶段 4: 规范化落盘入库、Emby刷新与二楼币原子结算"""
+        task_stmt = select(DownloadTask).where(DownloadTask.submission_id == sub.id)
+        task_res = await session.execute(task_stmt)
+        task = task_res.scalar_one_or_none()
+
+        download_path = task.download_path if task else None
+        if not download_path or not os.path.exists(download_path):
+            download_path = os.path.join(settings.QB_SAVE_PATH, sub.title)
+
+        # 解析剧集集数
+        ep_num = 1
+        if sub.episode_numbers:
+            try:
+                ep_list = json.loads(sub.episode_numbers)
+                if ep_list and isinstance(ep_list, list):
+                    ep_num = ep_list[0]
+            except Exception:
+                pass
+
+        success, msg, dest_path = auto_mounter.mount_media(
+            source_path=download_path,
+            media_type=sub.media_type,
+            title=sub.title,
+            year=sub.year,
+            season_number=sub.season_number,
+            episode_number=ep_num
+        )
+
+        if not success:
+            sub.status = "failed"
+            sub.error_message = f"入库失败: {msg}"
+            return
+
+        sub.dest_path = dest_path
+        sub.status = "completed"
+
+        # 触发 Emby 媒体库刷新
+        await emby_client.refresh_library()
+
+        # 原子结算二楼币发放给投稿用户
+        user_stmt = select(User).where(User.id == sub.user_id)
+        user_res = await session.execute(user_stmt)
+        user = user_res.scalar_one_or_none()
+
+        if user:
+            user.balance += sub.reward_points
+            ledger = PointsLedger(
+                user_id=user.id,
+                amount=sub.reward_points,
+                balance_after=user.balance,
+                event_type="upload_reward",
+                description=f"入库成功奖励: 《{sub.title}》 ({sub.media_type})",
+                ref_id=str(sub.id)
+            )
+            session.add(ledger)
+            logger.info(f"Rewarded {sub.reward_points} 二楼币 to user {user.username} (Sub: {sub.id})")
+
+        # 检查是否关联了缺集悬赏单，如有则结算悬赏
+        bounty_stmt = select(WantedEpisode).where(
+            WantedEpisode.tmdb_id == sub.tmdb_id,
+            WantedEpisode.status.in_(["open", "claimed"])
+        )
+        bounty_res = await session.execute(bounty_stmt)
+        bounties = bounty_res.scalars().all()
+        for b in bounties:
+            b.status = "completed"
+            b.submission_id = sub.id
+            if user and b.bounty_points > 0:
+                user.balance += b.bounty_points
+                b_ledger = PointsLedger(
+                    user_id=user.id,
+                    amount=b.bounty_points,
+                    balance_after=user.balance,
+                    event_type="bounty_reward",
+                    description=f"补全求片悬赏奖励: 《{b.title}》",
+                    ref_id=str(b.id)
+                )
+                session.add(b_ledger)
+
+pipeline = SubmissionPipeline()
