@@ -13,6 +13,7 @@ from backend.config import settings, get_cors_origins
 from backend.database import AsyncSessionLocal
 from backend.services.pipeline_service import SubmissionPipelineService
 from backend.redis_client import redis_manager
+from backend.clients.tmdb import tmdb_client
 from backend.bot import create_bot_app
 from backend.routes.v1 import auth, tasks, submissions, points, wanted, shop, admin, webhooks
 
@@ -197,11 +198,20 @@ async def readiness_check(response: Response):
     redis_ok = await redis_manager.ping()
 
     emby_configured = bool(settings.EMBY_SERVER_URL and settings.EMBY_API_KEY)
-    tmdb_configured = bool(settings.TMDB_API_KEY)
+
+    # TMDB 做真实连通性自检，而不是只看 key 是否非空 ——
+    # 能区分未配置、凭证无效、网络不通（境内服务器常见）与真正可用。
+    tmdb_health = await tmdb_client.health_check()
+    tmdb_ok = bool(tmdb_health.get("ok"))
 
     # 生产模式严格判定 (Fail-Closed)
     if settings.APP_ENV == "production":
-        is_ready = db_ok and (not settings.REQUIRE_REDIS_IN_PROD or redis_ok) and emby_configured and tmdb_configured
+        is_ready = (
+            db_ok
+            and (not settings.REQUIRE_REDIS_IN_PROD or redis_ok)
+            and emby_configured
+            and tmdb_ok
+        )
         if not is_ready:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
             return {
@@ -209,7 +219,8 @@ async def readiness_check(response: Response):
                 "database": "connected" if db_ok else "disconnected",
                 "redis": "connected" if redis_ok else "unavailable",
                 "emby": "configured" if emby_configured else "unconfigured",
-                "tmdb": "configured" if tmdb_configured else "unconfigured"
+                "tmdb": "ok" if tmdb_ok else (tmdb_health.get("kind") or "unavailable"),
+                "tmdb_detail": tmdb_health.get("detail"),
             }
 
     if not db_ok:
@@ -224,5 +235,7 @@ async def readiness_check(response: Response):
         "database": "connected",
         "redis": "connected" if redis_ok else "degraded_fallback",
         "emby": "configured" if emby_configured else "unconfigured",
-        "tmdb": "configured" if tmdb_configured else "unconfigured"
+        "tmdb": "ok" if tmdb_ok else (tmdb_health.get("kind") or "unavailable"),
+        "tmdb_detail": tmdb_health.get("detail"),
+        "tmdb_auth_mode": tmdb_health.get("auth_mode"),
     }

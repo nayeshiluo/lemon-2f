@@ -1,7 +1,7 @@
 import os
 import shutil
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from backend.database import get_db
@@ -9,7 +9,7 @@ from backend.models.user import User
 from backend.models.task import MediaTask
 from backend.models.submission import Submission
 from backend.auth import get_current_user
-from backend.clients.tmdb import tmdb_client
+from backend.clients.tmdb import tmdb_client, TMDBError
 from backend.services.task_service import TaskService
 from backend.repositories.task_repo import TaskRepository
 from backend.schemas import DedupReportResponse, MediaTaskResponse, PaginatedResponse
@@ -57,13 +57,34 @@ async def get_public_stats(db: AsyncSession = Depends(get_db)):
 
 @router.get("/search-candidates")
 async def search_candidates(
-    q: str = Query(..., description="搜索片名 / TMDB ID / URL"),
-    year: Optional[int] = None,
+    q: str = Query(..., min_length=1, max_length=200, description="搜索片名 / TMDB ID / URL"),
+    year: Optional[int] = Query(default=None, ge=1880, le=2100),
     current_user: User = Depends(get_current_user)
 ):
-    """通过 TMDB 检索影视候选条目 (支持片名、年份、TMDB ID 穿透)"""
-    results = await tmdb_client.search_candidates(q, year)
-    return {"results": results}
+    """
+    通过 TMDB 检索影视候选条目 (支持片名、年份、TMDB ID 穿透)。
+
+    TMDB 失败原因分类透出，绝不静默返回空列表 ——
+    否则"服务端没配 API Key"会被用户误读成"TMDB 里没这部剧"。
+    """
+    try:
+        results = await tmdb_client.search_candidates(q, year)
+    except TMDBError as e:
+        if e.is_config_problem:
+            # 503：服务端配置未就绪，不是用户输入的问题
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"影视检索服务暂不可用（{e}）。请联系管理员配置 TMDB 凭证。"
+            )
+        if e.is_transient:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"TMDB 暂时不可用（{e}）。请稍后重试。"
+            )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+
+    return {"results": results, "count": len(results)}
+
 
 @router.get("/dedup-report/{media_type}/{tmdb_id}", response_model=DedupReportResponse)
 async def get_dedup_report(
@@ -74,7 +95,17 @@ async def get_dedup_report(
 ):
     """TMDB & Emby 综合查重与缺集分析报告"""
     task_service = TaskService(db)
-    report = await task_service.get_task_dedup_report(tmdb_id, media_type)
+    try:
+        report = await task_service.get_task_dedup_report(tmdb_id, media_type)
+    except TMDBError as e:
+        code = (
+            status.HTTP_503_SERVICE_UNAVAILABLE
+            if (e.is_config_problem or e.is_transient)
+            else status.HTTP_502_BAD_GATEWAY
+        )
+        raise HTTPException(status_code=code, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return report
 
 @router.get("/list")

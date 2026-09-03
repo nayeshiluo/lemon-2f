@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.models.task import MediaTask, TaskItem
 from backend.repositories.task_repo import TaskRepository
-from backend.clients.tmdb import tmdb_client
+from backend.clients.tmdb import tmdb_client, TMDBError
 from backend.clients.emby import emby_client
 from backend.services.missing_engine import missing_engine
 
@@ -40,9 +40,23 @@ class TaskService:
         if existing:
             return existing
 
-        detail = await tmdb_client.get_details(tmdb_id, canonical_type)
+        # TMDB 失败原因必须原样透出，绝不能统一压成"无法获取元数据"。
+        # 那句话会把运维引向排查 TMDB ID 与网络，而真正原因常常是没配 API Key。
+        try:
+            detail = await tmdb_client.get_details(tmdb_id, canonical_type)
+        except TMDBError as e:
+            if e.is_config_problem:
+                raise ValueError(f"【服务端配置问题】{e}") from e
+            if e.is_transient:
+                raise ValueError(
+                    f"【TMDB 暂时不可用】{e} 这是暂时性故障，请稍后重试，无需修改投稿内容。"
+                ) from e
+            raise ValueError(f"{e}") from e
+
         if not detail:
-            raise ValueError(f"无法从 TMDB 获取 ID #{tmdb_id} ({canonical_type}) 的权威元数据，操作已拦截")
+            raise ValueError(
+                f"TMDB 中不存在 ID #{tmdb_id} ({canonical_type}) 对应的条目，请核对 TMDB ID 与媒体类型"
+            )
 
         total_items = detail.get("number_of_episodes", 1) if canonical_type != "movie" else 1
         task = MediaTask(

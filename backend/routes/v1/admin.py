@@ -11,6 +11,7 @@ from backend.models.task import MediaTask
 from backend.models.submission import Submission
 from backend.auth import require_admin
 from backend.clients.emby import emby_client
+from backend.clients.tmdb import tmdb_client
 from backend.repositories.user_repo import UserRepository
 from backend.services.points_service import PointsService
 from backend.config import settings
@@ -39,7 +40,19 @@ async def get_admin_stats(
     total_coins = coins_res.scalar() or 0
 
     media_path = settings.MEDIA_MOVIES_CONTAINER_PATH if os.path.exists(settings.MEDIA_MOVIES_CONTAINER_PATH) else "/"
-    total_d, used_d, free_d = shutil.disk_usage(media_path)
+    try:
+        total_d, used_d, free_d = shutil.disk_usage(media_path)
+        disk_info = {
+            "total_gb": round(total_d / (1024**3), 2),
+            "used_gb": round(used_d / (1024**3), 2),
+            "free_gb": round(free_d / (1024**3), 2),
+            "free_percent": round((free_d / total_d) * 100, 1),
+            "mount_ok": os.path.isdir(settings.MEDIA_MOVIES_CONTAINER_PATH),
+        }
+    except OSError:
+        # 与公开看板一致：存储探测失败不应让整个管理面板 500
+        disk_info = {"total_gb": 0, "used_gb": 0, "free_gb": 0,
+                     "free_percent": 0, "mount_ok": False}
 
     return {
         "total_users": total_users,
@@ -47,12 +60,7 @@ async def get_admin_stats(
         "completed_submissions": completed_subs,
         "total_tasks": total_tasks,
         "total_coins_circulation": total_coins,
-        "disk_info": {
-            "total_gb": round(total_d / (1024**3), 2),
-            "used_gb": round(used_d / (1024**3), 2),
-            "free_gb": round(free_d / (1024**3), 2),
-            "free_percent": round((free_d / total_d) * 100, 1)
-        }
+        "disk_info": disk_info
     }
 
 @router.get("/config")
@@ -63,6 +71,10 @@ async def get_system_config(admin_user: User = Depends(require_admin)):
             return ""
         return val[:2] + "****" + val[-2:] if len(val) >= 6 else "******"
 
+    # TMDB 真实连通性自检：管理员一眼看清是"没配"、"配错"还是"网络不通"，
+    # 而不用去猜为什么用户投稿总是失败。
+    tmdb_health = await tmdb_client.health_check()
+
     return {
         "app_name": settings.APP_NAME,
         "app_env": settings.APP_ENV,
@@ -70,10 +82,19 @@ async def get_system_config(admin_user: User = Depends(require_admin)):
         "emby_url": settings.EMBY_SERVER_URL,
         "emby_key": mask_secret(settings.EMBY_API_KEY),
         "tmdb_key": mask_secret(settings.TMDB_API_KEY),
+        "tmdb_status": {
+            "ok": tmdb_health.get("ok"),
+            "kind": tmdb_health.get("kind"),
+            "auth_mode": tmdb_health.get("auth_mode"),
+            "detail": tmdb_health.get("detail"),
+        },
         "qb_host": settings.QB_HOST,
         "qb_username": settings.QB_USERNAME,
+        "qb_webhook_enabled": bool((settings.QB_WEBHOOK_TOKEN or "").strip()),
         "delivery_adapter": settings.DELIVERY_ADAPTER,
-        "delivery_mode": settings.DELIVERY_MODE
+        "delivery_mode": settings.DELIVERY_MODE,
+        "pipeline_poll_interval_seconds": settings.PIPELINE_POLL_INTERVAL_SECONDS,
+        "pipeline_idle_interval_seconds": settings.PIPELINE_IDLE_INTERVAL_SECONDS,
     }
 
 @router.post("/refresh-emby")

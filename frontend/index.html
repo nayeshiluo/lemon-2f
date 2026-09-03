@@ -251,6 +251,16 @@
           </div>
         </div>
 
+        <!-- 检索错误 / 空结果提示：原样透出后端原因，避免用户白折腾关键词 -->
+        <div v-if="searchError"
+             class="glass-card p-5 rounded-2xl border border-amber-500/40 bg-amber-500/5 flex items-start space-x-3">
+          <span class="text-xl leading-none">⚠️</span>
+          <div class="space-y-1">
+            <div class="text-sm font-bold text-amber-300">检索未能完成</div>
+            <p class="text-xs text-slate-300 leading-relaxed">{{ searchError }}</p>
+          </div>
+        </div>
+
         <!-- 搜索结果列表 -->
         <div v-if="searchResults.length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <div v-for="item in searchResults" :key="item.tmdb_id" class="glass-card rounded-2xl overflow-hidden border border-slate-800 hover:border-pink-500/50 transition flex flex-col">
@@ -649,6 +659,7 @@
         const loginForm = ref({ username: '', password: '' })
         const searchQuery = ref('')
         const searchResults = ref([])
+        const searchError = ref('')
         const targetMedia = ref(null)
         const targetSeason = ref(1)
         const targetEpisode = ref(null)
@@ -816,16 +827,25 @@
         const handleSearchMedia = async () => {
           if (!searchQuery.value.trim()) return
           isSearching.value = true
+          searchError.value = ''
+          searchResults.value = []
           try {
             const res = await fetch(`/api/tasks/search-candidates?q=${encodeURIComponent(searchQuery.value.trim())}`, {
               headers: getAuthHeaders()
             })
+            const data = await res.json()
             if (res.ok) {
-              const data = await res.json()
               searchResults.value = data.results || []
+              if (searchResults.value.length === 0) {
+                searchError.value = '未找到匹配条目。可换个关键词，或直接粘贴 TMDB 链接 / ID。'
+              }
+            } else {
+              // 503 = 服务端 TMDB 未配置或暂时不可用，不是用户输入的问题。
+              // 必须原样透出后端原因，否则用户会一直换关键词白折腾。
+              searchError.value = data.detail || `检索失败 (HTTP ${res.status})`
             }
           } catch (e) {
-            alert('检索异常: ' + e.message)
+            searchError.value = '网络请求异常: ' + e.message
           } finally {
             isSearching.value = false
           }
@@ -1046,6 +1066,7 @@
           loginForm,
           searchQuery,
           searchResults,
+          searchError,
           targetMedia,
           targetSeason,
           targetEpisode,
