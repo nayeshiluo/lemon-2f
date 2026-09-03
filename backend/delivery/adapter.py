@@ -98,16 +98,39 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
         ext = os.path.splitext(source_file)[1] or ".mkv"
         dest_path = self.get_dest_path(media_type, title, year, tmdb_id, season, episode, extension=ext)
 
-        # 磁盘可用空间水位检查 (低于 10% 拒绝交付)
+        # 磁盘可用空间水位检查 (低于阈值拒绝交付)
+        # 与下载侧一致：媒体挂载点不存在时严禁静默 makedirs 到容器本地层，
+        # 否则文件会落进容器可写层，Emby 永远扫不到、重启即丢。
+        media_root = self.movies_root if media_type == "movie" else self.tv_root
+        if not os.path.isdir(media_root):
+            return False, (
+                f"媒体库挂载点不存在: {media_root}。"
+                f"拒绝落盘到容器本地层（Emby 将无法识别且重启丢失），请检查挂载配置"
+            ), ""
+
         dest_dir = os.path.dirname(dest_path)
-        os.makedirs(dest_dir, exist_ok=True)
         try:
-            total_d, used_d, free_d = shutil.disk_usage(dest_dir)
+            os.makedirs(dest_dir, exist_ok=True)
+        except OSError as e:
+            return False, f"创建目标目录失败 ({dest_dir}): {e}", ""
+
+        try:
+            total_d, _used_d, free_d = shutil.disk_usage(dest_dir)
             free_pct = (free_d / total_d) * 100
             if free_pct < settings.MIN_DISK_FREE_PERCENT:
                 return False, f"目标存储磁盘水位过低 ({free_pct:.1f}% < {settings.MIN_DISK_FREE_PERCENT}%)，落盘已被熔断保护", ""
-        except Exception:
-            pass
+            # 交付前预留空间校验：源文件放不下就不要开始拷，避免写半个文件污染媒体库
+            try:
+                src_size = os.path.getsize(source_file)
+                if src_size > 0 and free_d < src_size:
+                    return False, (
+                        f"目标存储剩余空间不足 (剩余 {free_d / 1024**3:.2f}GB < "
+                        f"待交付 {src_size / 1024**3:.2f}GB)，已拒绝交付"
+                    ), ""
+            except OSError:
+                pass
+        except OSError as e:
+            return False, f"无法读取目标存储水位 ({dest_dir}): {e}，已按 Fail-Closed 拒绝交付", ""
 
         # 文件冲突策略处理
         if os.path.exists(dest_path):

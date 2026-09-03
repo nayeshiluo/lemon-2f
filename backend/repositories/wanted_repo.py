@@ -1,7 +1,7 @@
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
-from backend.models.wanted import WantedTask
+from backend.models.wanted import WantedTask, SETTLEABLE_BOUNTY_STATUSES
 
 class WantedRepository:
     def __init__(self, db: AsyncSession):
@@ -20,16 +20,27 @@ class WantedRepository:
         tmdb_id: int,
         media_type: str,
         season: Optional[int],
-        episode: Optional[int]
+        episode: Optional[int],
+        for_update: bool = False
     ) -> List[WantedTask]:
-        """严格按 (tmdb_id, media_type, season, episode) 精准匹配悬赏单"""
+        """
+        严格按 (tmdb_id, media_type, season, episode) 精准匹配可结算悬赏单。
+
+        可结算状态必须同时包含 open 与 claimed：
+        claimed 表示已被认领但尚未交付，入库成功后同样必须发放赏金，
+        否则押金会永久冻结在系统中（既不退款也不发赏）。
+
+        for_update=True 时加悲观行锁，与 cancel 退款路径互斥防并发双付。
+        """
         stmt = select(WantedTask).where(
             WantedTask.tmdb_id == tmdb_id,
             WantedTask.media_type == media_type,
             WantedTask.season == season,
             WantedTask.episode == episode,
-            WantedTask.status.in_(["open", "claimed"])
+            WantedTask.status.in_(SETTLEABLE_BOUNTY_STATUSES)
         )
+        if for_update:
+            stmt = stmt.with_for_update()
         res = await self.db.execute(stmt)
         return list(res.scalars().all())
 

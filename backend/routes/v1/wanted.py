@@ -1,10 +1,10 @@
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from backend.database import get_db
 from backend.models.user import User
-from backend.models.wanted import WantedTask
+from backend.models.wanted import WantedTask, CANCELLABLE_BOUNTY_STATUSES
 from backend.models.ledger import PointsLedger
 from backend.auth import get_current_user
 from backend.schemas import WantedCreate, WantedResponse
@@ -27,13 +27,29 @@ async def create_wanted_task(
     # 核心修复 P0-2: 统一将 anime/variety 规范化为 tv 作为 TMDB identity 存储，保证与投稿结算 100% 对齐
     canonical_media_type = TaskService.get_canonical_tmdb_type(req.media_type)
 
+    # 核心修复: 电影悬赏必须强制把季集写成 NULL。
+    # 结算侧按 (tmdb_id, media_type, season IS NULL, episode IS NULL) 精确匹配，
+    # 若此处残留 schema 默认值 season=1/episode=1，电影悬赏将永远匹配不上、赏金永久冻结。
+    if canonical_media_type == "movie":
+        target_season = None
+        target_episode = None
+    else:
+        if req.season is None or req.episode is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="剧集/动漫/综艺悬赏必须明确指定目标季度 (season>=0) 与单集序号 (episode>=1)"
+            )
+        target_season = req.season
+        target_episode = req.episode
+
     wanted = WantedTask(
         creator_id=current_user.id,
         tmdb_id=req.tmdb_id,
         media_type=canonical_media_type,
         title=req.title,
-        season=req.season,
-        episode=req.episode,
+        year=req.year,
+        season=target_season,
+        episode=target_episode,
         bounty_points=req.bounty_points,
         status="open"
     )
@@ -47,7 +63,9 @@ async def create_wanted_task(
             amount=req.bounty_points,
             event_type="bounty_lock",
             idempotency_key=idempotency_key,
-            description=f"发布求片悬赏冻结: 《{req.title}》 {f'S{req.season}E{req.episode}' if req.season else ''}",
+            description=f"发布求片悬赏冻结: 《{req.title}》" + (
+                f" S{target_season:02d}E{target_episode:02d}" if target_episode is not None else ""
+            ),
             ref_type="wanted_task",
             ref_id=str(wanted.id)
         )
@@ -82,7 +100,7 @@ async def cancel_wanted_task(
     if wanted.creator_id != current_user.id and current_user.role not in ["admin", "owner"]:
         raise HTTPException(status_code=403, detail="无权取消该悬赏")
 
-    if wanted.status != "open":
+    if wanted.status not in CANCELLABLE_BOUNTY_STATUSES:
         raise HTTPException(status_code=400, detail=f"该悬赏当前状态为 [{wanted.status}]，无法取消退款")
 
     # 标记状态为 cancelled
@@ -111,9 +129,11 @@ async def cancel_wanted_task(
 
 @router.get("/list", response_model=List[WantedResponse])
 async def list_open_wanted(
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db)
 ):
     """获取所有开放中的求片悬赏任务"""
     wanted_repo = WantedRepository(db)
-    return await wanted_repo.list_open_wanted(limit=limit)
+    items, _total = await wanted_repo.list_open(offset=offset, limit=limit)
+    return items

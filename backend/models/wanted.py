@@ -6,6 +6,17 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
+# 悬赏可结算状态单一真源：
+# open    = 悬赏中，尚无人认领
+# claimed = 已被认领但尚未交付
+# 两者在真实入库后都必须能结算发放赏金，否则 escrow 押金会永久冻结在系统内。
+# 任何结算路径都必须引用此常量，禁止各自硬编码状态字面量。
+SETTLEABLE_BOUNTY_STATUSES = ("open", "claimed")
+
+# 允许发起取消退款的状态（仅未认领的悬赏可由发布者主动撤销）
+CANCELLABLE_BOUNTY_STATUSES = ("open",)
+
+
 class WantedTask(Base):
     """求片与缺集悬赏池"""
     __tablename__ = "wanted_tasks"

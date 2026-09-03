@@ -2,10 +2,26 @@ import re
 import base64
 import logging
 import httpx
-from typing import Optional, Dict, Any, List
+from enum import Enum
+from typing import Optional, Dict, Any, List, Tuple
 from backend.config import settings
 
 logger = logging.getLogger("lemon_2f.qb")
+
+
+class TorrentProbe(str, Enum):
+    """
+    种子探测结果三态。
+
+    历史缺陷：get_torrent_info() 把"qB 服务不可达"、"认证失败"和"种子确实不存在"
+    全部压成 None。流水线据此在 10 分钟后判定 FAILED_QB_MISSING —— 一旦 qB
+    容器重启或网络抖动超过 10 分钟，全部在途投稿会被批量误杀并释放预占。
+    因此必须把"探测不到"与"确认不存在"严格区分开。
+    """
+    OK = "ok"                 # 成功拿到种子信息
+    NOT_FOUND = "not_found"   # qB 正常应答，但库内确实没有该 hash
+    UNAVAILABLE = "unavailable"  # qB 不可达 / 认证失败 / 超时，状态未知
+
 
 class QBittorrentClient:
     """qBittorrent Web API 异步客户端 (带自动重连、BTIH Base32->Hex 规范化与挂载路径强制下发)"""
@@ -96,20 +112,53 @@ class QBittorrentClient:
             logger.error(f"Failed to add torrent to qB: {e}")
             return False
 
-    async def get_torrent_info(self, torrent_hash: str) -> Optional[Dict[str, Any]]:
-        """获取单个种子下载状态"""
+    async def probe_torrent(self, torrent_hash: str) -> Tuple[TorrentProbe, Optional[Dict[str, Any]]]:
+        """
+        三态探测种子状态，严格区分「qB 不可达」与「种子确实不存在」。
+
+        返回 (TorrentProbe.OK, info) / (NOT_FOUND, None) / (UNAVAILABLE, None)。
+        流水线只有在拿到 NOT_FOUND 时才允许把投稿判死，UNAVAILABLE 必须原地等待，
+        否则 qB 重启一次就会批量误杀所有在途任务。
+        """
         await self._ensure_auth()
+        if not self.is_logged_in:
+            logger.warning(f"qB probe skipped, not authenticated: {torrent_hash}")
+            return TorrentProbe.UNAVAILABLE, None
+
         try:
             async with httpx.AsyncClient(timeout=10.0, cookies=self.cookies) as client:
-                res = await client.get(f"{self.host}/api/v2/torrents/info", params={"hashes": torrent_hash.lower()})
-                if res.status_code == 200:
-                    torrents = res.json()
-                    if torrents:
-                        return torrents[0]
-                return None
+                res = await client.get(
+                    f"{self.host}/api/v2/torrents/info",
+                    params={"hashes": torrent_hash.lower()}
+                )
+                if res.status_code == 403:
+                    # Cookie 过期：重新登录后重试一次
+                    self.is_logged_in = False
+                    if not await self.login():
+                        return TorrentProbe.UNAVAILABLE, None
+                    res = await client.get(
+                        f"{self.host}/api/v2/torrents/info",
+                        params={"hashes": torrent_hash.lower()},
+                        cookies=self.cookies
+                    )
+
+                if res.status_code != 200:
+                    logger.warning(f"qB probe HTTP {res.status_code} for {torrent_hash}")
+                    return TorrentProbe.UNAVAILABLE, None
+
+                torrents = res.json()
+                if torrents:
+                    return TorrentProbe.OK, torrents[0]
+                # qB 正常应答且返回空列表 => 确认库内无此种子
+                return TorrentProbe.NOT_FOUND, None
         except Exception as e:
-            logger.error(f"Failed to get torrent info {torrent_hash}: {e}")
-            return None
+            logger.error(f"qB probe transport error {torrent_hash}: {e}")
+            return TorrentProbe.UNAVAILABLE, None
+
+    async def get_torrent_info(self, torrent_hash: str) -> Optional[Dict[str, Any]]:
+        """获取单个种子下载状态（薄封装，保留向后兼容；新代码请用 probe_torrent）"""
+        state, info = await self.probe_torrent(torrent_hash)
+        return info if state == TorrentProbe.OK else None
 
     async def delete_torrent(self, torrent_hash: str, delete_files: bool = True) -> bool:
         """删除任务与物理文件"""

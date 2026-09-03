@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 import redis.asyncio as aioredis
 
-from backend.config import settings
+from backend.config import settings, get_cors_origins
 from backend.database import AsyncSessionLocal
 from backend.services.pipeline_service import SubmissionPipelineService
 from backend.redis_client import redis_manager
@@ -81,7 +81,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

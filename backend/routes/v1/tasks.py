@@ -33,19 +33,26 @@ async def get_public_stats(db: AsyncSession = Depends(get_db)):
     total_coins = coins_res.scalar() or 0
 
     media_path = settings.MEDIA_MOVIES_CONTAINER_PATH if os.path.exists(settings.MEDIA_MOVIES_CONTAINER_PATH) else "/"
-    total_d, used_d, free_d = shutil.disk_usage(media_path)
+    try:
+        total_d, used_d, free_d = shutil.disk_usage(media_path)
+        disk_info = {
+            "total_gb": round(total_d / (1024**3), 2),
+            "used_gb": round(used_d / (1024**3), 2),
+            "free_gb": round(free_d / (1024**3), 2),
+            "free_percent": round((free_d / total_d) * 100, 1),
+            "mount_ok": os.path.isdir(settings.MEDIA_MOVIES_CONTAINER_PATH),
+        }
+    except OSError:
+        # 公开看板不应因存储探测失败而整体 500，降级为 mount_ok=False 明示异常
+        disk_info = {"total_gb": 0, "used_gb": 0, "free_gb": 0,
+                     "free_percent": 0, "mount_ok": False}
 
     return {
         "total_users": total_users,
         "total_submissions": total_subs,
         "completed_submissions": completed_subs,
         "total_coins_circulation": total_coins,
-        "disk_info": {
-            "total_gb": round(total_d / (1024**3), 2),
-            "used_gb": round(used_d / (1024**3), 2),
-            "free_gb": round(free_d / (1024**3), 2),
-            "free_percent": round((free_d / total_d) * 100, 1)
-        }
+        "disk_info": disk_info
     }
 
 @router.get("/search-candidates")

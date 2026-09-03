@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     # 服务端网络
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+
+    # CORS 允许来源白名单 (逗号分隔)。生产环境严禁使用 "*"：
+    # 配合 allow_credentials=True 时通配来源等于允许任意站点携带用户凭证发起跨站请求。
+    CORS_ALLOW_ORIGINS: str = Field(default="*")
     
     # 数据库连接
     DATABASE_URL: str = Field(default="postgresql+asyncpg://postgres:postgres@postgres:5432/lemon_2f")
@@ -107,3 +111,23 @@ def is_secret_insecure(secret: str) -> bool:
 if settings.APP_ENV == "production" and is_secret_insecure(settings.SECRET_KEY):
     if "pytest" not in sys.modules:
         raise RuntimeError("【生产启动被安全拦截】检测到 SECRET_KEY 为空或使用了公开示例占位符！请在 .env 中设置强随机字符串。")
+
+
+def get_cors_origins() -> List[str]:
+    """
+    解析 CORS 白名单。
+
+    生产环境下 "*" 配合 allow_credentials=True 会被浏览器拒绝，且语义上等同于
+    允许任意站点携带用户 JWT 发起跨站请求，因此生产必须显式配置白名单。
+    """
+    raw = (settings.CORS_ALLOW_ORIGINS or "").strip()
+    if raw == "*" or not raw:
+        # 与 SECRET_KEY 校验保持一致：测试进程内不做生产拦截
+        if settings.APP_ENV == "production" and "pytest" not in sys.modules:
+            raise RuntimeError(
+                "【生产启动被安全拦截】CORS_ALLOW_ORIGINS 不能为空或 '*'。"
+                "请在 .env 中显式配置站点白名单，例如："
+                "CORS_ALLOW_ORIGINS=https://2f.example.com,https://emby.example.com"
+            )
+        return ["*"]
+    return [o.strip() for o in raw.split(",") if o.strip()]

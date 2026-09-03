@@ -72,7 +72,13 @@ class FFprobeQCService:
 
     @classmethod
     async def inspect(cls, file_path: str) -> Tuple[bool, str, Dict[str, Any]]:
-        """执行 FFprobe 提取视频流结构化元数据"""
+        """
+        执行 FFprobe 提取视频流结构化元数据。
+
+        安全策略 (Fail-Closed)：ffprobe 缺失或执行失败一律判定质检不通过。
+        绝不能在探测失败时伪造 duration=3600 / 1080p 等元数据并放行，
+        否则任何 8MB 随机字节的假文件都能骗过质检直接换取软妹币。
+        """
         if not os.path.exists(file_path):
             return False, f"文件不存在: {file_path}", {}
 
@@ -93,37 +99,31 @@ class FFprobeQCService:
                 stderr=asyncio.subprocess.PIPE
             )
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=30.0)
-            
+
             if process.returncode != 0:
-                return True, "基本尺寸通过 (无 ffprobe 执行)", {
-                    "file_size": file_size,
-                    "duration_seconds": 3600.0,
-                    "width": 1920,
-                    "height": 1080,
-                    "video_codec": "h264",
-                    "audio_codec": "aac",
-                    "bitrate_kbps": 5000,
-                    "is_4k": False
-                }
+                return False, (
+                    f"QC_PROBE_FAILED: ffprobe 无法解析该文件 (exit={process.returncode})，"
+                    f"疑似损坏文件、非视频文件或伪造文件，已按 Fail-Closed 策略拦截"
+                ), {}
 
             data = json.loads(stdout.decode("utf-8", errors="ignore"))
             format_info = data.get("format", {})
             streams = data.get("streams", [])
-            
+
             duration = float(format_info.get("duration", 0.0))
             bitrate = int(format_info.get("bit_rate", 0)) if format_info.get("bit_rate") else 0
-            
+
             video_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
             audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
-            
+
             if not video_stream:
                 return False, "质检未检测到有效视频流", {}
-            
+
             width = int(video_stream.get("width", 0))
             height = int(video_stream.get("height", 0))
             codec = video_stream.get("codec_name", "unknown")
             audio_codec = audio_stream.get("codec_name", "none") if audio_stream else "none"
-            
+
             # 时长硬性拦截（防 5 秒短视频骗分）
             if duration < settings.MIN_VIDEO_DURATION_SECONDS:
                 return False, f"时长过短 ({duration:.1f}s < 阈值 {settings.MIN_VIDEO_DURATION_SECONDS}s)，疑似假视频或广告", {}
@@ -144,17 +144,14 @@ class FFprobeQCService:
             return True, "质检合格", meta
 
         except FileNotFoundError:
-            # 兼容环境无 ffprobe
-            return True, "基本校验通过 (环境无 ffprobe)", {
-                "file_size": file_size,
-                "duration_seconds": 3600.0,
-                "width": 1920,
-                "height": 1080,
-                "video_codec": "h264",
-                "audio_codec": "aac",
-                "bitrate_kbps": 5000,
-                "is_4k": False
-            }
+            # 环境缺少 ffprobe：严禁放行，否则质检形同虚设
+            logger.error("ffprobe 未安装，质检无法执行，已按 Fail-Closed 拦截该文件")
+            return False, (
+                "QC_UNAVAILABLE: 服务器未安装 ffprobe，无法执行视频质检。"
+                "出于防刷安全，系统拒绝在无质检能力的情况下确认入库"
+            ), {}
+        except asyncio.TimeoutError:
+            return False, "QC_TIMEOUT: ffprobe 解析超时 (>30s)，已拦截", {}
         except Exception as e:
             return False, f"质检异常: {str(e)}", {}
 

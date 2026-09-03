@@ -8,3 +8,7 @@ media/
 .vscode/
 .idea/
 *.log
+.pytest_cache/
+*.db
+*.sqlite
+*.sqlite3

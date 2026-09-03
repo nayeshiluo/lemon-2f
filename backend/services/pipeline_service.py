@@ -19,7 +19,7 @@ from backend.services.task_service import TaskService
 from backend.qc.inspector import ffprobe_qc
 from backend.delivery.adapter import get_delivery_adapter
 from backend.clients.emby import emby_client
-from backend.qb_client import qb_client
+from backend.qb_client import qb_client, TorrentProbe
 from backend.redis_client import redis_manager
 
 logger = logging.getLogger("lemon_2f.submission_pipeline")
@@ -50,23 +50,49 @@ class SubmissionPipelineService:
                 logger.info(f"TaskItem S{sub.target_season:02d}E{sub.target_episode:02d} reservation immediately released")
 
     async def run_state_machine_cycle(self):
-        """执行单次全量状态机巡检与推进"""
+        """
+        执行单次全量状态机巡检与推进。
+
+        事务隔离要求：
+        1. 每条投稿独立 commit，单条失败必须 rollback 自己的脏改动，
+           否则残留改动会随统一 commit 一起写库，污染其他健康投稿；
+        2. commit/rollback 会把 Session 内所有实例置为 expired，
+           继续用循环开头一次性加载的旧对象会触发同步 lazy load 并抛
+           MissingGreenlet，导致该轮剩余投稿全部处理不了。
+           因此必须先取 ID 列表，再逐条重新 eager 加载。
+        """
         active_subs = await self.sub_repo.get_active_submissions()
-        for sub in active_subs:
+        sub_ids = [s.id for s in active_subs]
+
+        for sub_id in sub_ids:
+            sub = None
             try:
-                if sub.status in ["pending", "reserved"]:
+                # 逐条重新加载，规避上一条 commit/rollback 造成的实例过期
+                sub = await self.sub_repo.get_by_id(sub_id)
+                if not sub:
+                    continue
+
+                status = sub.status
+                if status in ["pending", "reserved"]:
                     await self._handle_pending(sub)
-                elif sub.status == "downloading":
+                elif status == "downloading":
                     await self._handle_downloading(sub)
-                elif sub.status == "inspecting":
+                elif status == "inspecting":
                     await self._handle_inspecting(sub)
-                elif sub.status == "delivering":
+                elif status == "delivering":
                     await self._handle_delivering(sub)
-                elif sub.status == "waiting_emby":
+                elif status == "waiting_emby":
                     await self._handle_waiting_emby(sub)
+                else:
+                    continue
+
+                await self.db.commit()
             except Exception as e:
-                logger.error(f"Error handling submission #{sub.id} state [{sub.status}]: {e}", exc_info=True)
-        await self.db.commit()
+                logger.error(f"Error handling submission #{sub_id}: {e}", exc_info=True)
+                try:
+                    await self.db.rollback()
+                except Exception as rollback_err:
+                    logger.error(f"Rollback failed for submission #{sub_id}: {rollback_err}")
 
     async def _ensure_task_bound(self, sub: Submission) -> MediaTask:
         """确保投稿任务主体绑定有效"""
@@ -87,18 +113,35 @@ class SubmissionPipelineService:
 
     async def _handle_pending(self, sub: Submission):
         """阶段 1: 磁盘熔断检查、确保任务绑定、强制下发 save_path 提交到 qB"""
-        # 磁盘熔断检查 (低于 10% 拒绝开启新下载)
-        download_root = settings.QB_CONTAINER_DOWNLOAD_PATH if os.path.exists(settings.QB_CONTAINER_DOWNLOAD_PATH) else "/"
+        # 磁盘熔断检查 (低于阈值拒绝开启新下载)
+        # 注意：下载根目录不存在时不能静默回退到 "/" 去测宿主盘水位 ——
+        # 那等于拿一个无关分区的空闲率替真实挂载点背书。挂载缺失必须直接判死。
+        download_root = settings.QB_CONTAINER_DOWNLOAD_PATH
+        if not os.path.exists(download_root):
+            sub.status = "failed"
+            sub.error_message = (
+                f"下载挂载点不存在: {download_root}。"
+                f"请检查 qB 与本服务的共享挂载配置，交付链路已被熔断"
+            )
+            await self._release_reservation(sub)
+            logger.error(f"Submission #{sub.id} download root missing: {download_root}")
+            return
+
         try:
-            total_d, used_d, free_d = shutil.disk_usage(download_root)
+            total_d, _used_d, free_d = shutil.disk_usage(download_root)
             free_pct = (free_d / total_d) * 100
             if free_pct < settings.MIN_DISK_FREE_PERCENT:
                 sub.status = "failed"
                 sub.error_message = f"服务器下载存储空间不足 ({free_pct:.1f}% < {settings.MIN_DISK_FREE_PERCENT}%)，下载已被系统熔断"
                 await self._release_reservation(sub)
                 return
-        except Exception:
-            pass
+        except OSError as e:
+            # 无法读取水位说明挂载异常，Fail-Closed 拒绝而非放行
+            sub.status = "failed"
+            sub.error_message = f"无法读取下载存储水位 ({download_root}): {e}，已按 Fail-Closed 熔断"
+            await self._release_reservation(sub)
+            logger.error(f"Submission #{sub.id} disk_usage failed on {download_root}: {e}")
+            return
 
         try:
             await self._ensure_task_bound(sub)
@@ -117,8 +160,13 @@ class SubmissionPipelineService:
 
         sub.torrent_hash = t_hash
 
-        info = await qb_client.get_torrent_info(t_hash)
-        if not info:
+        probe_state, info = await qb_client.probe_torrent(t_hash)
+        if probe_state == TorrentProbe.UNAVAILABLE:
+            # qB 暂时不可达：保持当前状态，下一轮重试，不要盲目重复 add
+            logger.warning(f"Submission #{sub.id} qB unavailable at pending stage, will retry")
+            return
+
+        if probe_state == TorrentProbe.NOT_FOUND:
             added = await qb_client.add_torrent(
                 urls=sub.magnet_uri,
                 category=settings.QB_CATEGORY,
@@ -148,28 +196,35 @@ class SubmissionPipelineService:
         if not sub.torrent_hash or not sub.download_job:
             return
 
-        info = await qb_client.get_torrent_info(sub.torrent_hash)
+        probe_state, info = await qb_client.probe_torrent(sub.torrent_hash)
         now = datetime.now(timezone.utc)
 
-        # 种子在 qB 意外丢失恢复处理
-        if not info:
+        # qB 不可达 / 认证失败：状态未知，原地等待下一轮，严禁误杀在途任务
+        if probe_state == TorrentProbe.UNAVAILABLE:
+            logger.warning(
+                f"Submission #{sub.id} qB unavailable, holding state (no kill). hash={sub.torrent_hash}"
+            )
+            return
+
+        # 种子在 qB 中确认不存在：尝试恢复，持续失败才判死
+        if probe_state == TorrentProbe.NOT_FOUND:
             last_time = sub.download_job.last_progress_at or sub.updated_at
             if last_time and last_time.tzinfo is None:
                 last_time = last_time.replace(tzinfo=timezone.utc)
             missing_seconds = (now - (last_time or now)).total_seconds()
-            
-            if missing_seconds > 180: # 超过 3 分钟检索不到种子，尝试自动重新添加一次
+
+            if missing_seconds > 180:  # 超过 3 分钟确认不存在，尝试自动重新添加一次
                 re_added = await qb_client.add_torrent(
                     urls=sub.magnet_uri,
                     category=settings.QB_CATEGORY,
                     save_path=settings.QB_CONTAINER_DOWNLOAD_PATH
                 )
-                if not re_added and missing_seconds > 600: # 超过 10 分钟持续丢失，标记为 FAILED
+                if not re_added and missing_seconds > 600:  # 超过 10 分钟持续缺失，判死
                     sub.status = "failed"
                     sub.error_message = "qBittorrent 种子任务丢失且无法自动恢复 (FAILED_QB_MISSING)"
                     sub.download_job.status = "error"
                     await self._release_reservation(sub)
-                    logger.error(f"Submission #{sub.id} qB torrent permanently missing, terminated")
+                    logger.error(f"Submission #{sub.id} qB torrent confirmed missing, terminated")
             return
 
         job = sub.download_job
@@ -432,16 +487,15 @@ class SubmissionPipelineService:
                 )
                 item.is_rewarded = True
 
-                # 核心修复 P0-6: 悬赏结算采用行锁查询，防止与取消退款产生并发双付
-                stmt_bounties = select(WantedTask).where(
-                    WantedTask.tmdb_id == sub.tmdb_id,
-                    WantedTask.media_type == item.media_type,
-                    WantedTask.season == item.season,
-                    WantedTask.episode == item.episode,
-                    WantedTask.status == "open"
-                ).with_for_update()
-                bounty_res = await self.db.execute(stmt_bounties)
-                exact_bounties = bounty_res.scalars().all()
+                # 核心修复 P0-6: 悬赏结算走统一 repo，加行锁防与取消退款并发双付，
+                # 且必须覆盖 open + claimed 两种可结算状态，否则已认领悬赏的押金会永久冻结。
+                exact_bounties = await self.wanted_repo.find_exact_bounties(
+                    tmdb_id=sub.tmdb_id,
+                    media_type=item.media_type,
+                    season=item.season,
+                    episode=item.episode,
+                    for_update=True
+                )
 
                 for b in exact_bounties:
                     b.status = "completed"
