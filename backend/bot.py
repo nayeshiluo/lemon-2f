@@ -18,59 +18,112 @@ from backend.models.ledger import PointsLedger, SignInRecord
 from backend.models.submission import Submission
 from backend.models.wanted import WantedTask
 from backend.models.shop import ShopItem
+from backend.models.tg_bind import TG_BIND_CODE_TTL_MINUTES
 from backend.clients.tmdb import tmdb_client
 from backend.clients.emby import emby_client
 from backend.qb_client import qb_client
 from backend.services.points_service import PointsService
 from backend.services.submission_service import SubmissionService
+from backend.services.tg_bind_service import TgBindService
 from backend.repositories.submission_repo import SubmissionRepository
 
 logger = logging.getLogger("lemon_2f.bot")
 
-async def get_or_create_tg_user(tg_id: int, tg_username: Optional[str]) -> User:
-    """根据 Telegram User ID 获取或自动建档用户 (初始余额 0 + 严格流水入账)"""
+# 未绑定用户看到的统一引导文案。
+# 关键安全设计：Bot 绝不再按 Telegram ID 自动建立独立经济账户。
+# 历史实现会让同一个真人在 Web(Emby) 与 TG 各有一个账号、各领一份初始币，
+# 且 TG 兑换 Emby VIP 时没有可靠的履约对象。现在 Emby 账号是唯一权威身份。
+UNBOUND_HINT = (
+    "🔗 **您还没有绑定二楼账号**\n\n"
+    "本 Bot 是 Emby 账号的一个接入端，不再单独建号发币。\n"
+    "请按以下两步完成绑定：\n\n"
+    "1️⃣ 在此发送 `/link` 获取一次性绑定码\n"
+    "2️⃣ 打开二楼 Web 端 → 用 **Emby 账号密码登录** → 个人中心提交绑定码\n\n"
+    "绑定完成后即可在 Bot 中签到、投稿、查询软妹币。"
+)
+
+
+async def get_bound_user(tg_id: int) -> Optional[User]:
+    """
+    获取已绑定的账号；未绑定返回 None。
+
+    与历史 get_or_create_tg_user() 的本质区别：绝不自动建号、绝不自动发币。
+    """
     async with AsyncSessionLocal() as session:
-        stmt = select(User).where(User.tg_user_id == tg_id)
-        res = await session.execute(stmt)
-        user = res.scalar_one_or_none()
+        res = await session.execute(select(User).where(User.tg_user_id == tg_id))
+        return res.scalar_one_or_none()
 
-        if not user:
-            is_admin = tg_id in settings.TG_ADMIN_IDS
-            role = "owner" if is_admin else "user"
-            uname = tg_username or f"tg_{tg_id}"
-            
-            user = User(
-                username=uname,
-                tg_user_id=tg_id,
-                tg_username=tg_username,
-                role=role,
-                balance=0
-            )
-            session.add(user)
-            await session.flush()
 
-            points_service = PointsService(session)
-            await points_service.add_points(
-                user_id=user.id,
-                amount=settings.INITIAL_USER_COINS,
-                event_type="init",
-                idempotency_key=f"tg_init_{user.id}",
-                description="Telegram 首次进入自动建档赠送软妹币"
-            )
-            await session.commit()
-            await session.refresh(user)
+async def require_bound_user(update: Update) -> Optional[User]:
+    """
+    绑定闸门：未绑定则回复引导文案并返回 None。
+    所有涉及经济系统（签到/投稿/余额/商城）的指令都必须先过这道闸。
+    """
+    tg_user = update.effective_user
+    if not tg_user:
+        return None
 
+    user = await get_bound_user(tg_user.id)
+    if user:
         return user
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/start 指令"""
+    target = update.message or (update.callback_query.message if update.callback_query else None)
+    if target:
+        await target.reply_text(UNBOUND_HINT, parse_mode="Markdown")
+    return None
+
+
+async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/link 生成一次性绑定码，供 Web 端 Emby 已登录会话兑换"""
     tg_user = update.effective_user
     if not update.message or not tg_user:
         return
-    user = await get_or_create_tg_user(tg_user.id, tg_user.username)
+
+    existing = await get_bound_user(tg_user.id)
+    if existing:
+        await update.message.reply_text(
+            f"✅ 您已绑定二楼账号 `{existing.username}`\n"
+            f"🪙 当前余额：`{existing.balance}` 软妹币\n\n"
+            f"如需解绑请在 Web 端个人中心操作。",
+            parse_mode="Markdown"
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = TgBindService(session)
+        try:
+            code, expires_at = await service.issue_code(tg_user.id, tg_user.username)
+        except ValueError as e:
+            await update.message.reply_text(f"⚠️ {str(e)}")
+            return
+
+    await update.message.reply_text(
+        f"🔑 **您的一次性绑定码**\n\n"
+        f"`{code}`\n\n"
+        f"⏱️ 有效期：**{TG_BIND_CODE_TTL_MINUTES} 分钟**（过期请重新发送 /link）\n\n"
+        f"**接下来：**\n"
+        f"1️⃣ 打开二楼 Web 端，用 **Emby 账号密码**登录\n"
+        f"2️⃣ 进入个人中心 → Telegram 绑定 → 粘贴上方绑定码\n\n"
+        f"⚠️ 请勿将此码转发给任何人 —— 持有该码者可将您的 Telegram 绑到自己账号上。",
+        parse_mode="Markdown"
+    )
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/start 指令（未绑定时只给绑定引导，不建号不发币）"""
+    tg_user = update.effective_user
+    if not update.message or not tg_user:
+        return
+
+    user = await get_bound_user(tg_user.id)
+    if not user:
+        await update.message.reply_text(
+            "✨ **欢迎来到【二楼有请】影视众包管理中心** ✨\n\n" + UNBOUND_HINT,
+            parse_mode="Markdown"
+        )
+        return
 
     welcome_text = (
-        f"✨ **欢迎来到【二楼有请】影视众包管理中心** ✨\n\n"
+        f"✨ **欢迎回来，【二楼有请】影视众包管理中心** ✨\n\n"
         f"👤 **用户身份**：`{user.username}` ({user.role.upper()})\n"
         f"🪙 **软妹币余额**：`{user.balance}` 币\n"
         f"🔥 **连签天数**：`{user.sign_in_streak}` 天\n\n"
@@ -80,6 +133,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/sign` —— 每日签到赚软妹币\n"
         f"• `/points` —— 查看软妹币明细\n"
         f"• `/shop` —— 兑换 Emby VIP / 专线特权\n"
+        f"• `/link` —— 查看账号绑定状态\n"
     )
 
     keyboard = [
@@ -96,11 +150,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def cmd_sign(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/sign 签到指令"""
-    tg_user = update.effective_user
-    if not update.message or not tg_user:
+    """/sign 签到指令（必须已绑定 Emby 账号）"""
+    if not update.message:
         return
-    user = await get_or_create_tg_user(tg_user.id, tg_user.username)
+    user = await require_bound_user(update)
+    if not user:
+        return
 
     from datetime import date, datetime, timezone
     import random
@@ -224,7 +279,9 @@ async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_user = update.effective_user
     if not tg_user:
         return
-    user = await get_or_create_tg_user(tg_user.id, tg_user.username)
+    user = await require_bound_user(update)
+    if not user:
+        return
 
     detail_movie = await tmdb_client.get_details(tmdb_id, "movie")
     media_type = "movie" if detail_movie else "tv"
@@ -262,7 +319,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
 
     tg_user = query.from_user
-    user = await get_or_create_tg_user(tg_user.id, tg_user.username)
+    user = await get_bound_user(tg_user.id)
+    if not user:
+        # 未绑定：所有按钮一律拒绝，不建号不发币
+        await query.edit_message_text(UNBOUND_HINT, parse_mode="Markdown")
+        return
 
     data = query.data
     if data == "btn_sign":
@@ -360,6 +421,7 @@ def create_bot_app() -> Optional[Application]:
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("link", cmd_link))
     app.add_handler(CommandHandler("sign", cmd_sign))
     app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("upload", cmd_upload))

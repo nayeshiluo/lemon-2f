@@ -5,6 +5,7 @@ from backend.models.ledger import PointsLedger, SignInRecord
 from backend.models.wanted import WantedTask
 from backend.models.shop import ShopItem, ShopOrder
 from backend.models.audit import AuditLog, SystemSetting
+from backend.models.tg_bind import TgBindCode
 
 __all__ = [
     "User",
@@ -19,5 +20,6 @@ __all__ = [
     "ShopItem",
     "ShopOrder",
     "AuditLog",
-    "SystemSetting"
+    "SystemSetting",
+    "TgBindCode"
 ]

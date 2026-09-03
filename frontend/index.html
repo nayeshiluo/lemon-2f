@@ -391,7 +391,119 @@
         </div>
       </div>
 
-      <!-- ================= Tab 6: 管理员控制台 ================= -->
+      <!-- ================= Tab 6: 个人中心 (Telegram 绑定) ================= -->
+      <div v-if="currentTab === 'profile'" class="space-y-6">
+        <div class="glass-card p-6 rounded-2xl border border-brand-border">
+          <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+            <span>⚙️</span>
+            <span>个人中心 · 账号与绑定管理</span>
+          </h2>
+          <p class="text-xs text-slate-400 mt-1">
+            Emby 账号是您在二楼的唯一权威身份，Telegram Bot 作为它的一个接入端使用
+          </p>
+        </div>
+
+        <!-- 账号概览 -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="glass-card p-5 rounded-2xl border border-slate-800">
+            <div class="text-xs text-slate-400">当前账号</div>
+            <div class="text-base font-bold text-white mt-1">{{ user ? user.username : '-' }}</div>
+            <div class="text-[11px] text-purple-300 mt-1 uppercase font-mono">{{ user ? user.role : '' }}</div>
+          </div>
+          <div class="glass-card p-5 rounded-2xl border border-slate-800">
+            <div class="text-xs text-slate-400">Emby 账号</div>
+            <div class="text-base font-bold text-white mt-1">{{ (user && user.emby_username) || '未关联' }}</div>
+          </div>
+          <div class="glass-card p-5 rounded-2xl border border-slate-800">
+            <div class="text-xs text-slate-400">软妹币余额</div>
+            <div class="text-xl font-black text-yellow-400 mt-1">{{ user ? user.balance : 0 }} 🪙</div>
+          </div>
+        </div>
+
+        <!-- Telegram 绑定卡片 -->
+        <div class="glass-card p-6 rounded-2xl border border-brand-border space-y-5">
+          <div class="flex items-center justify-between">
+            <h3 class="text-base font-bold text-white flex items-center space-x-2">
+              <span>✈️</span>
+              <span>Telegram Bot 绑定</span>
+            </h3>
+            <span v-if="tgBind.bound"
+                  class="text-[11px] px-2 py-1 rounded-full bg-green-500/15 border border-green-500/40 text-green-400 font-bold">
+              ● 已绑定
+            </span>
+            <span v-else
+                  class="text-[11px] px-2 py-1 rounded-full bg-slate-500/15 border border-slate-500/40 text-slate-400 font-bold">
+              ○ 未绑定
+            </span>
+          </div>
+
+          <!-- 已绑定态 -->
+          <div v-if="tgBind.bound" class="space-y-4">
+            <div class="bg-slate-900/70 p-4 rounded-xl border border-slate-800 space-y-2">
+              <div class="flex items-center justify-between text-sm">
+                <span class="text-slate-400">Telegram 用户名</span>
+                <span class="font-mono text-slate-200">@{{ tgBind.tg_username || '（未设置用户名）' }}</span>
+              </div>
+              <div class="flex items-center justify-between text-sm">
+                <span class="text-slate-400">Telegram ID</span>
+                <span class="font-mono text-slate-200">{{ tgBind.tg_user_id }}</span>
+              </div>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              您现在可以直接在 Bot 中使用
+              <code class="text-purple-300">/sign</code> 签到、
+              <code class="text-purple-300">/find</code> 查重、
+              <code class="text-purple-300">/upload</code> 投稿，
+              所有软妹币收支与本账号完全共享。
+            </p>
+            <button @click="handleTgUnbind"
+                    :disabled="isTgUnbinding"
+                    class="bg-red-600/80 hover:bg-red-600 text-white text-xs font-bold px-4 py-2 rounded-lg transition disabled:opacity-50">
+              {{ isTgUnbinding ? '解绑中...' : '🔓 解除 Telegram 绑定' }}
+            </button>
+          </div>
+
+          <!-- 未绑定态 -->
+          <div v-else class="space-y-4">
+            <div class="bg-slate-900/70 p-4 rounded-xl border border-slate-800 space-y-2.5">
+              <div class="text-xs font-bold text-slate-300">绑定步骤</div>
+              <div class="flex items-start space-x-2 text-xs text-slate-400">
+                <span class="text-purple-400 font-bold">1.</span>
+                <span>打开二楼 Telegram Bot，发送 <code class="text-purple-300">/link</code> 指令</span>
+              </div>
+              <div class="flex items-start space-x-2 text-xs text-slate-400">
+                <span class="text-purple-400 font-bold">2.</span>
+                <span>Bot 会回复一个 <span class="text-slate-200 font-semibold">6 位一次性绑定码</span>（10 分钟内有效）</span>
+              </div>
+              <div class="flex items-start space-x-2 text-xs text-slate-400">
+                <span class="text-purple-400 font-bold">3.</span>
+                <span>把绑定码粘贴到下方输入框并提交</span>
+              </div>
+            </div>
+
+            <div class="flex items-center space-x-3">
+              <input v-model="tgBindCode"
+                     @keyup.enter="handleTgBind"
+                     type="text"
+                     maxlength="16"
+                     placeholder="请输入 6 位绑定码"
+                     class="flex-1 bg-slate-900 border border-slate-700 focus:border-brand-pink rounded-xl px-4 py-2.5 text-sm text-white uppercase tracking-[0.3em] font-mono outline-none transition" />
+              <button @click="handleTgBind"
+                      :disabled="isTgBinding"
+                      class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-sm font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-pink-600/25 transition disabled:opacity-50 whitespace-nowrap">
+                {{ isTgBinding ? '绑定中...' : '🔗 立即绑定' }}
+              </button>
+            </div>
+
+            <p class="text-[11px] text-amber-400/90 leading-relaxed">
+              ⚠️ 安全提示：绑定码请勿转发给任何人。持有该码者可将其 Telegram 绑定到您的账号上。
+              为防止账号劫持，系统禁止自助改绑 —— 如需更换请先解绑。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= Tab 7: 管理面板 ================= -->
       <div v-if="currentTab === 'admin'" class="space-y-6">
         <div class="glass-card p-6 rounded-2xl border border-brand-pink/30 space-y-4">
           <div class="flex items-center justify-between">
@@ -548,6 +660,12 @@
         const shopItems = ref([])
         const ledgerList = ref([])
 
+        // Telegram 账号绑定状态
+        const tgBind = ref({ bound: false, tg_user_id: null, tg_username: null, message: '' })
+        const tgBindCode = ref('')
+        const isTgBinding = ref(false)
+        const isTgUnbinding = ref(false)
+
         const navTabs = computed(() => {
           const list = [
             { id: 'home', name: '首页大屏', icon: '🏠' },
@@ -556,6 +674,9 @@
             { id: 'shop', name: '二楼商城', icon: '🛍️' },
             { id: 'ledger', name: '软妹币账本', icon: '📜' },
           ]
+          if (user.value) {
+            list.push({ id: 'profile', name: '个人中心', icon: '⚙️' })
+          }
           if (user.value && (user.value.role === 'admin' || user.value.role === 'owner')) {
             list.push({ id: 'admin', name: '管理面板', icon: '👑' })
           }
@@ -838,11 +959,77 @@
           return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
         }
 
+        // ============ Telegram 账号绑定 ============
+        const loadTgBindStatus = async () => {
+          if (!user.value) return
+          try {
+            const res = await fetch('/api/auth/tg-bind/status', { headers: getAuthHeaders() })
+            if (res.ok) tgBind.value = await res.json()
+          } catch (e) {
+            console.error(e)
+          }
+        }
+
+        const handleTgBind = async () => {
+          const code = (tgBindCode.value || '').trim()
+          if (!code) {
+            alert('请输入 Telegram Bot 中 /link 指令获取的绑定码')
+            return
+          }
+          isTgBinding.value = true
+          try {
+            const res = await fetch('/api/auth/tg-bind/redeem', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              body: JSON.stringify({ code })
+            })
+            const data = await res.json()
+            if (res.ok) {
+              tgBind.value = data
+              tgBindCode.value = ''
+              await fetchUserProfile()
+              alert(`✅ ${data.message}`)
+            } else {
+              alert(data.detail || '绑定失败')
+            }
+          } catch (e) {
+            alert('请求异常: ' + e.message)
+          } finally {
+            isTgBinding.value = false
+          }
+        }
+
+        const handleTgUnbind = async () => {
+          if (!confirm('确定要解除 Telegram 绑定吗？\n\n解绑后需重新在 Bot 中发送 /link 并再次绑定才能使用 Bot 功能。\n您的软妹币余额与历史流水不会受到任何影响。')) {
+            return
+          }
+          isTgUnbinding.value = true
+          try {
+            const res = await fetch('/api/auth/tg-bind/unbind', {
+              method: 'POST',
+              headers: getAuthHeaders()
+            })
+            const data = await res.json()
+            if (res.ok) {
+              tgBind.value = data
+              await fetchUserProfile()
+              alert(`✅ ${data.message}`)
+            } else {
+              alert(data.detail || '解绑失败')
+            }
+          } catch (e) {
+            alert('请求异常: ' + e.message)
+          } finally {
+            isTgUnbinding.value = false
+          }
+        }
+
         onMounted(async () => {
           await fetchUserProfile()
           loadStats()
           loadPublicSubmissions()
           loadShopItems()
+          loadTgBindStatus()
         })
 
         return {
@@ -868,6 +1055,10 @@
           mySubmissions,
           shopItems,
           ledgerList,
+          tgBind,
+          tgBindCode,
+          isTgBinding,
+          isTgUnbinding,
           handleLogin,
           logout,
           handleSignIn,
@@ -879,6 +1070,9 @@
           loadMySubmissions,
           loadLedger,
           loadPublicSubmissions,
+          loadTgBindStatus,
+          handleTgBind,
+          handleTgUnbind,
           getStatusBadgeClass,
           getStatusText,
           formatDate

@@ -29,6 +29,18 @@ class EmbyLoginRequest(BaseModel):
     username: str
     password: str
 
+# --- Telegram 账号绑定 ---
+class TgBindRedeemRequest(BaseModel):
+    """Web 端提交 TG 绑定码"""
+    code: str = Field(min_length=4, max_length=16, description="Telegram /link 指令获取的一次性绑定码")
+
+
+class TgBindStatusResponse(BaseModel):
+    bound: bool
+    tg_user_id: Optional[int] = None
+    tg_username: Optional[str] = None
+    message: str
+
 class UserProfile(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -36,6 +48,7 @@ class UserProfile(BaseModel):
     username: str
     emby_username: Optional[str] = None
     tg_username: Optional[str] = None
+    tg_user_id: Optional[int] = None
     role: str
     is_whitelisted: bool
     balance: int
