@@ -63,11 +63,21 @@ class Settings(BaseSettings):
     DELIVERY_MODE: str = "hardlink"
     FILE_CONFLICT_STRATEGY: str = "SKIP"
     
-    # 质检与风控
+    # 风控与风险熔断
     MIN_VIDEO_DURATION_SECONDS: int = 30
     MIN_DISK_FREE_PERCENT: float = 10.0 # 磁盘最低可用水位熔断 (10%)
     DEAD_TORRENT_TIMEOUT_MINUTES: int = 15
     RESERVATION_TTL_MINUTES: int = 120
+
+    # 流水线调度：轮询兜底间隔（秒）。事件驱动为主，轮询只作为兜底安全网。
+    PIPELINE_POLL_INTERVAL_SECONDS: int = 15
+    # 空闲时（无任何活跃投稿）的兜底间隔，可放宽以降低数据库空转查询
+    PIPELINE_IDLE_INTERVAL_SECONDS: int = 60
+
+    # qBittorrent 完成回调 Webhook 共享密钥。
+    # 留空则 Webhook 端点直接拒绝所有请求（Fail-Closed），
+    # 绝不允许无鉴权的公网端点触发内部流水线。
+    QB_WEBHOOK_TOKEN: str = Field(default="")
     
     # 软妹币经济系统分值规则
     INITIAL_USER_COINS: int = 100

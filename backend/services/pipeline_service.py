@@ -24,6 +24,12 @@ from backend.redis_client import redis_manager
 
 logger = logging.getLogger("lemon_2f.submission_pipeline")
 
+# 单条投稿推进锁的 TTL。必须大于单条投稿最慢一个阶段的耗时
+# （最慢是 inspecting：多文件 ffprobe，每文件上限 30s），
+# 同时不能太长，否则持有者崩溃后该投稿会长时间无人推进。
+ADVANCE_LOCK_TTL_SECONDS = 300
+
+
 class SubmissionPipelineService:
     """
     工业级全自动投稿与状态机推进流水线:
@@ -49,11 +55,17 @@ class SubmissionPipelineService:
                 t_item.reserved_until = None
                 logger.info(f"TaskItem S{sub.target_season:02d}E{sub.target_episode:02d} reservation immediately released")
 
-    async def run_state_machine_cycle(self):
+    async def run_state_machine_cycle(self) -> int:
         """
-        执行单次全量状态机巡检与推进。
+        执行单次全量状态机巡检与推进，返回成功推进的投稿条数。
 
-        事务隔离要求：
+        并发安全（支持多 Worker / 多副本水平扩展）：
+        原实现是单进程轮询扫全表，一旦部署多个副本，同一条投稿会被
+        多个 Worker 同时推进 —— 可能重复 add_torrent、重复交付落盘，
+        甚至在 Emby 确认阶段并发发币。现在每条投稿在推进前必须先抢到
+        Redis 独占锁 `pipeline_advance:{id}`，抢不到就跳过交给锁持有者。
+
+        事务隔离：
         1. 每条投稿独立 commit，单条失败必须 rollback 自己的脏改动，
            否则残留改动会随统一 commit 一起写库，污染其他健康投稿；
         2. commit/rollback 会把 Session 内所有实例置为 expired，
@@ -63,36 +75,60 @@ class SubmissionPipelineService:
         """
         active_subs = await self.sub_repo.get_active_submissions()
         sub_ids = [s.id for s in active_subs]
+        advanced = 0
+
+        # Redis 不可用时的显式告警。
+        # 生产环境 RedisLock 是 Fail-Closed 的（拿不到锁就不推进），
+        # 这在"金钱相关操作宁可停摆也不能重复"的原则下是正确取舍，
+        # 但必须明确告警，绝不能让日志谎报成"另一个 Worker 正在推进"，
+        # 否则排障时会把 Redis 宕机误判成正常的多副本竞争。
+        redis_down = bool(sub_ids) and not await redis_manager.ping()
+        if redis_down and settings.APP_ENV == "production" and settings.REQUIRE_REDIS_IN_PROD:
+            logger.error(
+                f"PIPELINE_HALTED: Redis 不可用，{len(sub_ids)} 条活跃投稿无法获取推进锁而全部暂停。"
+                f"这是 Fail-Closed 保护（防多副本重复交付/重复发币），请立即恢复 Redis。"
+            )
+            return 0
 
         for sub_id in sub_ids:
-            sub = None
-            try:
-                # 逐条重新加载，规避上一条 commit/rollback 造成的实例过期
-                sub = await self.sub_repo.get_by_id(sub_id)
-                if not sub:
+            # 单条投稿独占推进锁：TTL 略大于单条最长处理耗时，
+            # 持有者崩溃后锁自动过期，不会永久卡死该投稿。
+            lock_key = f"pipeline_advance:{sub_id}"
+            async with redis_manager.lock(lock_key, timeout_seconds=ADVANCE_LOCK_TTL_SECONDS) as acquired:
+                if not acquired:
+                    logger.debug(f"Submission #{sub_id} 正被其他 Worker 推进，本轮跳过")
                     continue
 
-                status = sub.status
-                if status in ["pending", "reserved"]:
-                    await self._handle_pending(sub)
-                elif status == "downloading":
-                    await self._handle_downloading(sub)
-                elif status == "inspecting":
-                    await self._handle_inspecting(sub)
-                elif status == "delivering":
-                    await self._handle_delivering(sub)
-                elif status == "waiting_emby":
-                    await self._handle_waiting_emby(sub)
-                else:
-                    continue
-
-                await self.db.commit()
-            except Exception as e:
-                logger.error(f"Error handling submission #{sub_id}: {e}", exc_info=True)
                 try:
-                    await self.db.rollback()
-                except Exception as rollback_err:
-                    logger.error(f"Rollback failed for submission #{sub_id}: {rollback_err}")
+                    # 逐条重新加载，规避上一条 commit/rollback 造成的实例过期
+                    sub = await self.sub_repo.get_by_id(sub_id)
+                    if not sub:
+                        continue
+
+                    status = sub.status
+                    if status in ["pending", "reserved"]:
+                        await self._handle_pending(sub)
+                    elif status == "downloading":
+                        await self._handle_downloading(sub)
+                    elif status == "inspecting":
+                        await self._handle_inspecting(sub)
+                    elif status == "delivering":
+                        await self._handle_delivering(sub)
+                    elif status == "waiting_emby":
+                        await self._handle_waiting_emby(sub)
+                    else:
+                        continue
+
+                    await self.db.commit()
+                    advanced += 1
+                except Exception as e:
+                    logger.error(f"Error handling submission #{sub_id}: {e}", exc_info=True)
+                    try:
+                        await self.db.rollback()
+                    except Exception as rollback_err:
+                        logger.error(f"Rollback failed for submission #{sub_id}: {rollback_err}")
+
+        return advanced
 
     async def _ensure_task_bound(self, sub: Submission) -> MediaTask:
         """确保投稿任务主体绑定有效"""

@@ -201,4 +201,9 @@ class SubmissionService:
 
             await self.db.commit()
             await self.db.refresh(sub)
+
+            # 事件驱动：立即唤醒流水线 Worker 处理这条新投稿，
+            # 不必等满一个轮询周期。信号投递失败也无妨 —— 轮询兜底会接住。
+            await redis_manager.signal_wake(f"new_submission:{sub.id}")
+
             return sub
