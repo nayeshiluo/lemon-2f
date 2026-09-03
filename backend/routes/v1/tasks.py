@@ -83,8 +83,8 @@ async def list_tasks(
     region: Optional[str] = None,
     year: Optional[int] = None,
     status: Optional[str] = None,
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(default=20, ge=1, le=100, description="每页条数 (1~100)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):

@@ -10,6 +10,13 @@ from backend.services.submission_service import SubmissionService
 
 router = APIRouter(prefix="/submissions", tags=["Submissions"])
 
+# 分页参数统一约束：page 从 1 起、page_size 有上限。
+# 缺少约束时 page=0 会算出 OFFSET -20 —— PostgreSQL 直接报错
+# (ERROR: OFFSET must not be negative)，而 SQLite 静默当 0，
+# 导致本机测试全绿、生产 500。page_size 无上限则可被用于打爆内存。
+PageQuery = Query(default=1, ge=1, description="页码，从 1 开始")
+PageSizeQuery = Query(default=20, ge=1, le=100, description="每页条数 (1~100)")
+
 @router.post("/", response_model=SubmissionResponse)
 async def create_submission(
     req: SubmissionCreate,
@@ -38,8 +45,8 @@ async def create_submission(
 
 @router.get("/my")
 async def list_my_submissions(
-    page: int = 1,
-    page_size: int = 20,
+    page: int = PageQuery,
+    page_size: int = PageSizeQuery,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -62,8 +69,8 @@ async def list_my_submissions(
 
 @router.get("/all")
 async def list_all_submissions(
-    page: int = 1,
-    page_size: int = 20,
+    page: int = PageQuery,
+    page_size: int = PageSizeQuery,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):

@@ -1,6 +1,6 @@
 import random
 from datetime import date, datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from backend.database import get_db
@@ -16,8 +16,8 @@ router = APIRouter(prefix="/points", tags=["Points"])
 
 @router.get("/ledger")
 async def get_ledger(
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(default=20, ge=1, le=100, description="每页条数 (1~100)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):

@@ -169,6 +169,49 @@ async def test_anime_bounty_normalized_to_canonical_tv(client_and_user):
 
 
 @pytest.mark.asyncio
+async def test_pagination_negative_offset_is_rejected(client_and_user):
+    """
+    回归测试: page=0 会算出 OFFSET -20。
+    PostgreSQL 直接报错 (ERROR: OFFSET must not be negative)，
+    而 SQLite 静默当 0 处理 —— 本机测试会全绿、生产才 500。
+    因此必须由 FastAPI 层用 ge=1 提前 422 拦截。
+    """
+    client, _ = client_and_user
+    paged_routes = [
+        "/api/points/ledger",
+        "/api/submissions/my",
+        "/api/submissions/all",
+        "/api/tasks/list",
+    ]
+    for path in paged_routes:
+        for bad in ("?page=0", "?page=-5"):
+            r = await client.get(path + bad)
+            assert r.status_code == 422, (
+                f"{path}{bad} 未被拦截 (返回 {r.status_code})，"
+                f"该请求在 PostgreSQL 下会产生负 OFFSET 并 500"
+            )
+
+
+@pytest.mark.asyncio
+async def test_pagination_page_size_upper_bound_enforced(client_and_user):
+    """page_size 必须有上限，否则可被用于一次性拉全表打爆内存"""
+    client, _ = client_and_user
+    paged_routes = [
+        "/api/points/ledger",
+        "/api/submissions/my",
+        "/api/submissions/all",
+        "/api/tasks/list",
+    ]
+    for path in paged_routes:
+        for bad in ("?page_size=99999999", "?page_size=0", "?page_size=-10"):
+            r = await client.get(path + bad)
+            assert r.status_code == 422, f"{path}{bad} 未被拦截 (返回 {r.status_code})"
+        # 合法边界值必须放行
+        r = await client.get(path + "?page=1&page_size=100")
+        assert r.status_code == 200, f"{path} 合法上限 100 被误拦截: {r.text[:150]}"
+
+
+@pytest.mark.asyncio
 async def test_protected_routes_reject_anonymous():
     """鉴权回归：受保护路由在无 Token 时必须拒绝，不能裸奔"""
     transport = httpx.ASGITransport(app=app)
