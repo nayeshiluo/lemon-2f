@@ -32,6 +32,7 @@ class SubmissionService:
         self.sub_repo = SubmissionRepository(db)
         self.task_repo = TaskRepository(db)
         self.task_service = TaskService(db)
+        self.points_service = PointsService(db)
 
     async def create_submission(
         self,
@@ -137,7 +138,8 @@ class SubmissionService:
             if existing_locked and existing_locked.status in active_statuses:
                 raise ValueError("该种子资源已在并发中被成功受理，请勿重复提交")
 
-            expected_reward = settings.MOVIE_UPLOAD_REWARD if canonical_media_type == "movie" else settings.EPISODE_UPLOAD_REWARD
+            points_rules = await self.points_service.get_points_rules()
+            expected_reward = points_rules["MOVIE_UPLOAD_REWARD"] if canonical_media_type == "movie" else points_rules["EPISODE_UPLOAD_REWARD"]
 
             # 6. 失败重试隔离清理：若复用历史 failed/rejected 任务，彻底清理旧执行态、旧 SubmissionItem 与旧 DownloadJob，并同步更新 tmdb_id 与 media_type
             if existing and existing.status in ["failed", "rejected"]:
@@ -283,8 +285,9 @@ class SubmissionService:
 
         # 4. 扣除积分与惩罚计算
         points_service = PointsService(self.db)
+        points_rules = await points_service.get_points_rules()
         points_to_deduct = 0
-        effective_multiplier = multiplier if multiplier is not None else settings.SUBMISSION_DELETE_PENALTY_MULTIPLIER
+        effective_multiplier = multiplier if multiplier is not None else points_rules["SUBMISSION_DELETE_PENALTY_MULTIPLIER"]
 
         if not is_admin:
             # 用户自删：若曾实发过积分，则按指定倍数（默认3倍）严厉扣除；若未发币仅撤回

@@ -15,7 +15,7 @@ from backend.clients.tmdb import tmdb_client
 from backend.repositories.user_repo import UserRepository
 from backend.services.points_service import PointsService
 from backend.services.submission_service import SubmissionService
-from backend.schemas import AdminDeleteSubmissionRequest
+from backend.schemas import AdminDeleteSubmissionRequest, PointsRulesUpdateRequest
 from backend.config import settings
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -214,3 +214,34 @@ async def admin_delete_submission(
         return res
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+@router.get("/points-config")
+async def get_admin_points_config(
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """管理员获取当前系统的动态积分激励与扣分规则"""
+    points_service = PointsService(db)
+    rules = await points_service.get_points_rules()
+    return rules
+
+@router.post("/points-config")
+async def update_admin_points_config(
+    req: PointsRulesUpdateRequest,
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """管理员动态修改积分激励与扣分规则 (全量热更新并持久化到 system_settings)"""
+    points_service = PointsService(db)
+    payload = {k: v for k, v in req.model_dump().items() if v is not None}
+    updated = await points_service.update_points_rules(
+        new_rules=payload,
+        actor_username=admin_user.username,
+        actor_id=admin_user.id
+    )
+    await db.commit()
+    return {
+        "success": True,
+        "message": "系统积分规则已更新并立即热生效",
+        "rules": updated
+    }

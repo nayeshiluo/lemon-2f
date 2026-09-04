@@ -45,9 +45,10 @@ async def daily_sign_in(
     points_service = PointsService(db)
 
     # 1. 尝试插入签到防重记录
+    rules = await points_service.get_points_rules()
     streak = current_user.sign_in_streak + 1 if (current_user.last_sign_in and (today - current_user.last_sign_in.date()).days == 1) else 1
-    base_coins = random.randint(settings.SIGN_IN_MIN_COINS, settings.SIGN_IN_MAX_COINS)
-    streak_bonus = min(streak * 2, 20)
+    base_coins = random.randint(rules["SIGN_IN_MIN_COINS"], rules["SIGN_IN_MAX_COINS"])
+    streak_bonus = min(streak * rules["SIGN_IN_STREAK_BONUS_PER_DAY"], rules["SIGN_IN_STREAK_BONUS_CAP"])
     total_coins = base_coins + streak_bonus
 
     record = SignInRecord(
@@ -90,3 +91,27 @@ async def daily_sign_in(
         new_balance=current_user.balance,
         message=f"签到成功！获得 {total_coins} 软妹币 (已连续签到 {streak} 天)"
     )
+
+@router.get("/leaderboard")
+async def get_points_leaderboard(
+    category: str = Query(default="uploads", pattern="^(uploads|earned|balance)$", description="uploads / earned / balance"),
+    timespan: str = Query(default="all", pattern="^(all|month|week)$", description="all / month / week"),
+    limit: int = Query(default=10, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    全站众包贡献与软妹币排行榜：
+    - category='uploads': 成功投稿收录数量榜
+    - category='earned': 投稿贡献赚币榜
+    - category='balance': 软妹币总财富榜
+    - timespan='all' | 'month' | 'week'
+    """
+    points_service = PointsService(db)
+    items = await points_service.get_leaderboard(category=category, timespan=timespan, limit=limit)
+    return {
+        "category": category,
+        "timespan": timespan,
+        "items": items,
+        "total": len(items)
+    }

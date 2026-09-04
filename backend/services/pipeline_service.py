@@ -377,9 +377,10 @@ class SubmissionPipelineService:
 
             t_item = await self.task_repo.get_item_by_season_episode(task.id, s_num, e_num)
 
-            reward = (settings.MOVIE_UPLOAD_REWARD if sub.media_type == "movie" else settings.EPISODE_UPLOAD_REWARD)
+            rules = await self.points_service.get_points_rules()
+            reward = (rules["MOVIE_UPLOAD_REWARD"] if sub.media_type == "movie" else rules["EPISODE_UPLOAD_REWARD"])
             if best_meta.get("is_4k"):
-                reward += settings.RESOLUTION_4K_BONUS
+                reward += rules["RESOLUTION_4K_BONUS"]
 
             sub_item = SubmissionItem(
                 submission_id=sub.id,

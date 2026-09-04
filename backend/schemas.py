@@ -244,3 +244,13 @@ class AdminDeleteSubmissionRequest(BaseModel):
     multiplier: Optional[float] = Field(default=None, description="惩罚倍数，默认使用系统配置")
     custom_amount: Optional[int] = Field(default=None, ge=0, description="自定义扣分数量")
     reason: Optional[str] = Field(default="", description="删除下架原因")
+
+class PointsRulesUpdateRequest(BaseModel):
+    MOVIE_UPLOAD_REWARD: Optional[int] = Field(default=None, ge=0)
+    EPISODE_UPLOAD_REWARD: Optional[int] = Field(default=None, ge=0)
+    RESOLUTION_4K_BONUS: Optional[int] = Field(default=None, ge=0)
+    SIGN_IN_MIN_COINS: Optional[int] = Field(default=None, ge=0)
+    SIGN_IN_MAX_COINS: Optional[int] = Field(default=None, ge=0)
+    SIGN_IN_STREAK_BONUS_PER_DAY: Optional[int] = Field(default=None, ge=0)
+    SIGN_IN_STREAK_BONUS_CAP: Optional[int] = Field(default=None, ge=0)
+    SUBMISSION_DELETE_PENALTY_MULTIPLIER: Optional[int] = Field(default=None, ge=1)

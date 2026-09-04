@@ -231,6 +231,104 @@
         </div>
       </div>
 
+      <!-- ================= Tab: 众包贡献排行榜 (英雄榜) ================= -->
+      <div v-if="currentTab === 'leaderboard'" class="space-y-6">
+        <div class="glass-card p-6 rounded-2xl border border-brand-border flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+              <span>🏆</span>
+              <span>二楼众包英雄榜 · 贡献排行</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-1">致敬为 Emby 影视生态奉献片源与整理剧集的众包先锋</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- 榜单类型切换 -->
+            <div class="bg-slate-900/80 p-1 rounded-xl border border-slate-800 flex text-xs">
+              <button @click="setLeaderboardCategory('uploads')"
+                      :class="leaderboardCategory === 'uploads' ? 'bg-pink-600 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                      class="px-3 py-1 rounded-lg transition">
+                📦 投稿数量榜
+              </button>
+              <button @click="setLeaderboardCategory('earned')"
+                      :class="leaderboardCategory === 'earned' ? 'bg-purple-600 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                      class="px-3 py-1 rounded-lg transition">
+                🪙 赚币贡献榜
+              </button>
+              <button @click="setLeaderboardCategory('balance')"
+                      :class="leaderboardCategory === 'balance' ? 'bg-amber-600 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                      class="px-3 py-1 rounded-lg transition">
+                💰 软妹币财富榜
+              </button>
+            </div>
+            <!-- 时间跨度切换 (财富榜除外) -->
+            <div v-if="leaderboardCategory !== 'balance'" class="bg-slate-900/80 p-1 rounded-xl border border-slate-800 flex text-xs">
+              <button @click="setLeaderboardTimespan('all')"
+                      :class="leaderboardTimespan === 'all' ? 'bg-slate-700 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                      class="px-2.5 py-1 rounded-lg transition">
+                历史总榜
+              </button>
+              <button @click="setLeaderboardTimespan('month')"
+                      :class="leaderboardTimespan === 'month' ? 'bg-slate-700 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                      class="px-2.5 py-1 rounded-lg transition">
+                本月榜
+              </button>
+              <button @click="setLeaderboardTimespan('week')"
+                      :class="leaderboardTimespan === 'week' ? 'bg-slate-700 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                      class="px-2.5 py-1 rounded-lg transition">
+                本周榜
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 排行榜列表 -->
+        <div v-if="leaderboardItems.length === 0" class="glass-card rounded-2xl p-12 text-center space-y-2">
+          <div class="text-3xl">🏅</div>
+          <div class="text-sm text-slate-400">当前周期暂无上榜用户，快来提交首部影视登顶榜首！</div>
+        </div>
+
+        <div v-else class="glass-card rounded-2xl p-6 border border-slate-800 space-y-3">
+          <div v-for="item in leaderboardItems" :key="item.user_id"
+               class="flex items-center justify-between p-3.5 rounded-xl border transition"
+               :class="item.rank === 1 ? 'bg-gradient-to-r from-yellow-500/10 to-slate-900 border-yellow-500/40 shadow-lg shadow-yellow-500/5' : item.rank === 2 ? 'bg-gradient-to-r from-slate-400/10 to-slate-900 border-slate-400/30' : item.rank === 3 ? 'bg-gradient-to-r from-amber-700/10 to-slate-900 border-amber-600/30' : 'bg-slate-900/50 border-slate-800/80 hover:bg-slate-800/40'">
+            
+            <!-- 排名与用户信息 -->
+            <div class="flex items-center space-x-3.5">
+              <div class="w-8 text-center flex-shrink-0 font-['Orbitron'] font-black text-lg">
+                <span v-if="item.rank === 1" class="text-2xl">🥇</span>
+                <span v-else-if="item.rank === 2" class="text-2xl">🥈</span>
+                <span v-else-if="item.rank === 3" class="text-2xl">🥉</span>
+                <span v-else class="text-slate-500 text-sm">#{{ item.rank }}</span>
+              </div>
+              <div class="w-9 h-9 rounded-full bg-gradient-to-tr from-purple-600 to-pink-600 flex items-center justify-center font-bold text-white text-sm shadow">
+                {{ item.username.charAt(0).toUpperCase() }}
+              </div>
+              <div>
+                <div class="flex items-center space-x-2">
+                  <span class="text-sm font-bold text-white">{{ item.username }}</span>
+                  <span v-if="item.role !== 'user'" class="text-[10px] bg-pink-500/20 border border-pink-500/40 text-pink-400 px-1 rounded uppercase font-mono">{{ item.role }}</span>
+                </div>
+                <div class="text-[11px] text-slate-400 mt-0.5 flex space-x-3">
+                  <span>已入库: <strong class="text-slate-200">{{ item.accepted_count }}</strong> 部/集</span>
+                  <span>资产: <strong class="text-yellow-400">{{ item.balance }}</strong> 🪙</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 核心得分指标展示 -->
+            <div class="text-right">
+              <div class="text-base font-black font-['Orbitron']"
+                   :class="leaderboardCategory === 'earned' ? 'text-yellow-400' : leaderboardCategory === 'balance' ? 'text-amber-300' : 'text-cyan-400'">
+                {{ item.score_label }}
+              </div>
+              <div class="text-[10px] text-slate-500 mt-0.5">
+                {{ leaderboardCategory === 'earned' ? '累计贡献奖励' : leaderboardCategory === 'balance' ? '当前钱包余额' : '成功收录部数' }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ================= Tab 2: 查重 & 投稿 ================= -->
       <div v-if="currentTab === 'dedup'" class="space-y-6">
         <div class="glass-card p-6 rounded-2xl border border-brand-border space-y-4">
@@ -650,6 +748,58 @@
             </table>
           </div>
         </div>
+
+        <!-- 模块 3: 积分激励与控分规则动态热配置 -->
+        <div class="glass-card p-6 rounded-2xl border border-slate-800 space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-base font-bold text-white flex items-center space-x-2">
+              <span>⚙️</span>
+              <span>系统软妹币激励与控分规则热配置</span>
+            </h3>
+            <button @click="loadAdminPointsConfig" class="text-xs text-purple-400 hover:text-purple-300">🔄 重新读取</button>
+          </div>
+          <p class="text-xs text-slate-400">修改后立即热生效并持久化到系统配置，后续所有新投稿、签到与惩罚将直接按新规则结算，无需重启服务。</p>
+          
+          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 pt-2">
+            <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-1">
+              <label class="block text-[11px] font-semibold text-slate-300">电影入库基础奖励</label>
+              <input v-model.number="adminPointsRules.MOVIE_UPLOAD_REWARD" type="number" min="0" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-pink-500">
+            </div>
+            <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-1">
+              <label class="block text-[11px] font-semibold text-slate-300">剧集单集基础奖励</label>
+              <input v-model.number="adminPointsRules.EPISODE_UPLOAD_REWARD" type="number" min="0" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-pink-500">
+            </div>
+            <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-1">
+              <label class="block text-[11px] font-semibold text-slate-300">4K 原画画质加成</label>
+              <input v-model.number="adminPointsRules.RESOLUTION_4K_BONUS" type="number" min="0" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-pink-500">
+            </div>
+            <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-1">
+              <label class="block text-[11px] font-semibold text-slate-300">错片自删惩罚倍数</label>
+              <input v-model.number="adminPointsRules.SUBMISSION_DELETE_PENALTY_MULTIPLIER" type="number" min="1" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-red-500">
+            </div>
+            <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-1">
+              <label class="block text-[11px] font-semibold text-slate-300">签到最低基础币</label>
+              <input v-model.number="adminPointsRules.SIGN_IN_MIN_COINS" type="number" min="0" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500">
+            </div>
+            <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-1">
+              <label class="block text-[11px] font-semibold text-slate-300">签到最高基础币</label>
+              <input v-model.number="adminPointsRules.SIGN_IN_MAX_COINS" type="number" min="0" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500">
+            </div>
+            <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-1">
+              <label class="block text-[11px] font-semibold text-slate-300">连签单日递增加成</label>
+              <input v-model.number="adminPointsRules.SIGN_IN_STREAK_BONUS_PER_DAY" type="number" min="0" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500">
+            </div>
+            <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-1">
+              <label class="block text-[11px] font-semibold text-slate-300">连签加成奖励上限</label>
+              <input v-model.number="adminPointsRules.SIGN_IN_STREAK_BONUS_CAP" type="number" min="0" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500">
+            </div>
+          </div>
+          <div class="flex justify-end pt-2">
+            <button @click="handleSavePointsConfig" :disabled="isSavingPointsRules" class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow transition disabled:opacity-50">
+              {{ isSavingPointsRules ? '正在保存...' : '💾 保存配置并热生效' }}
+            </button>
+          </div>
+        </div>
       </div>
 
     </main>
@@ -880,6 +1030,25 @@
         const adminDeleteForm = ref({ sub_id: null, title: '', reward_points: 0, action: 'penalty_multiplier', multiplier: 3, custom_amount: 0, reason: '' })
         const isAdminDeleting = ref(false)
 
+        // 排行榜数据与控制
+        const leaderboardCategory = ref('uploads')
+        const leaderboardTimespan = ref('all')
+        const leaderboardItems = ref([])
+        const isLoadingLeaderboard = ref(false)
+
+        // 管理员动态规则热配置
+        const adminPointsRules = ref({
+          MOVIE_UPLOAD_REWARD: 60,
+          EPISODE_UPLOAD_REWARD: 20,
+          RESOLUTION_4K_BONUS: 30,
+          SIGN_IN_MIN_COINS: 5,
+          SIGN_IN_MAX_COINS: 20,
+          SIGN_IN_STREAK_BONUS_PER_DAY: 2,
+          SIGN_IN_STREAK_BONUS_CAP: 20,
+          SUBMISSION_DELETE_PENALTY_MULTIPLIER: 3
+        })
+        const isSavingPointsRules = ref(false)
+
         const loginForm = ref({ username: '', password: '' })
         const searchQuery = ref('')
         const searchResults = ref([])
@@ -904,6 +1073,7 @@
         const navTabs = computed(() => {
           const list = [
             { id: 'home', name: '首页大屏', icon: '🏠' },
+            { id: 'leaderboard', name: '英雄榜', icon: '🏆' },
             { id: 'dedup', name: '查重投稿', icon: '🔍' },
             { id: 'submissions', name: '我的任务', icon: '📦' },
             { id: 'shop', name: '二楼商城', icon: '🛍️' },
@@ -1196,13 +1366,80 @@
           }
         }
 
+        // ============ 排行榜逻辑 ============
+        const setLeaderboardCategory = (cat) => {
+          leaderboardCategory.value = cat
+          loadLeaderboard()
+        }
+
+        const setLeaderboardTimespan = (ts) => {
+          leaderboardTimespan.value = ts
+          loadLeaderboard()
+        }
+
+        const loadLeaderboard = async () => {
+          isLoadingLeaderboard.value = true
+          try {
+            const params = new URLSearchParams({
+              category: leaderboardCategory.value,
+              timespan: leaderboardTimespan.value,
+              limit: 20
+            })
+            const res = await fetch(`/api/points/leaderboard?${params.toString()}`, { headers: getAuthHeaders() })
+            if (res.ok) {
+              const data = await res.json()
+              leaderboardItems.value = data.items || []
+            }
+          } catch (e) {
+            console.error('加载排行榜失败:', e)
+          } finally {
+            isLoadingLeaderboard.value = false
+          }
+        }
+
+        // ============ 管理员动态积分配置 ============
+        const loadAdminPointsConfig = async () => {
+          if (!user.value || (user.value.role !== 'admin' && user.value.role !== 'owner')) return
+          try {
+            const res = await fetch('/api/admin/points-config', { headers: getAuthHeaders() })
+            if (res.ok) {
+              adminPointsRules.value = await res.json()
+            }
+          } catch (e) {
+            console.error('加载系统积分规则失败:', e)
+          }
+        }
+
+        const handleSavePointsConfig = async () => {
+          isSavingPointsRules.value = true
+          try {
+            const res = await fetch('/api/admin/points-config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              body: JSON.stringify(adminPointsRules.value)
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert('✅ ' + data.message)
+              adminPointsRules.value = data.rules
+            } else {
+              alert(data.detail || '保存失败')
+            }
+          } catch (e) {
+            alert('网络异常: ' + e.message)
+          } finally {
+            isSavingPointsRules.value = false
+          }
+        }
+
         // ============ 管理员数据与自由调控 ============
         const loadAdminData = async () => {
           if (!user.value || (user.value.role !== 'admin' && user.value.role !== 'owner')) return
           try {
-            const [uRes, sRes] = await Promise.all([
+            const [uRes, sRes, pRes] = await Promise.all([
               fetch('/api/admin/users?page=1&page_size=50', { headers: getAuthHeaders() }),
-              fetch('/api/submissions/all?page=1&page_size=50', { headers: getAuthHeaders() })
+              fetch('/api/submissions/all?page=1&page_size=50', { headers: getAuthHeaders() }),
+              fetch('/api/admin/points-config', { headers: getAuthHeaders() })
             ])
             if (uRes.ok) {
               const uData = await uRes.json()
@@ -1211,6 +1448,9 @@
             if (sRes.ok) {
               const sData = await sRes.json()
               adminSubmissions.value = sData.items || []
+            }
+            if (pRes.ok) {
+              adminPointsRules.value = await pRes.json()
             }
           } catch (e) {
             console.error('加载管理后台数据异常:', e)
@@ -1412,9 +1652,11 @@
           loadPublicSubmissions()
           loadShopItems()
           loadTgBindStatus()
+          loadLeaderboard()
         })
 
         watch(currentTab, (tab) => {
+          if (tab === 'leaderboard') loadLeaderboard()
           if (tab === 'submissions') loadMySubmissions()
           if (tab === 'ledger') loadLedger()
           if (tab === 'admin') loadAdminData()
@@ -1448,6 +1690,17 @@
           tgBindCode,
           isTgBinding,
           isTgUnbinding,
+          leaderboardCategory,
+          leaderboardTimespan,
+          leaderboardItems,
+          isLoadingLeaderboard,
+          setLeaderboardCategory,
+          setLeaderboardTimespan,
+          loadLeaderboard,
+          adminPointsRules,
+          isSavingPointsRules,
+          loadAdminPointsConfig,
+          handleSavePointsConfig,
           adminUsers,
           adminSubmissions,
           showUserDeleteModal,
