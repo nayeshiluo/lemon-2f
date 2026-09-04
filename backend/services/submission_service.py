@@ -291,29 +291,58 @@ class SubmissionService:
           - 用户自删：扣除实发积分的 N 倍 (默认 3 倍，配置项 SUBMISSION_DELETE_PENALTY_MULTIPLIER)
           - 管理员删片：可选 不扣分(no_deduct) / 倍数扣分(penalty_multiplier) / 自定义扣分(custom)
         """
-        # 核心并发安全：加行级悲观锁 SELECT FOR UPDATE，防止双击或并发重试导致重复删扣
-        stmt_lock = (
+        # 幂等删除核心：原子 CAS 状态翻转 (跨 PostgreSQL / SQLite 通用)
+        # 1) 先读主记录做归属权校验与状态判断（不加锁，读旧状态用于后续清理分支）
+        stmt_peek = select(Submission).where(Submission.id == submission_id)
+        res_peek = await self.db.execute(stmt_peek)
+        peek = res_peek.scalar_one_or_none()
+        if not peek:
+            raise ValueError(f"投稿 #{submission_id} 不存在")
+
+        if not is_admin and peek.user_id != operator.id:
+            raise ValueError("无权删除其他用户的投稿")
+
+        if peek.status == "deleted":
+            raise ValueError("该投稿已处于删除状态，请勿重复操作")
+
+        original_status = peek.status
+
+        # 2) 原子 UPDATE ... WHERE status != 'deleted'，只有行数变化的那个请求才是唯一执行者
+        from sqlalchemy import update as sa_update
+        cas_res = await self.db.execute(
+            sa_update(Submission)
+            .where(Submission.id == submission_id, Submission.status != "deleted")
+            .values(status="deleted")
+        )
+        if cas_res.rowcount == 0:
+            # 并发下已有其他请求抢先完成删除：幂等返回，绝不重复扣分
+            await self.db.rollback()
+            return {
+                "success": True,
+                "submission_id": submission_id,
+                "status": "deleted",
+                "points_deducted": 0,
+                "target_user_id": peek.user_id,
+                "message": "该资源已被并发请求处理下架，本次操作幂等跳过"
+            }
+        await self.db.flush()
+
+        # 3) 加载完整投稿（含 items / download_job）执行清理与结算
+        stmt_full = (
             select(Submission)
             .where(Submission.id == submission_id)
             .options(
                 selectinload(Submission.items),
                 selectinload(Submission.download_job)
             )
-            .with_for_update()
         )
-        res_lock = await self.db.execute(stmt_lock)
-        sub = res_lock.scalar_one_or_none()
+        res_full = await self.db.execute(stmt_full)
+        sub = res_full.scalar_one_or_none()
         if not sub:
             raise ValueError(f"投稿 #{submission_id} 不存在")
 
-        if not is_admin and sub.user_id != operator.id:
-            raise ValueError("无权删除其他用户的投稿")
-
-        if sub.status == "deleted":
-            raise ValueError("该投稿已处于删除状态，请勿重复操作")
-
         # 1. 若处于下载/活跃阶段，尝试从 qBittorrent 停止并移除种子与临时文件
-        if sub.torrent_hash and sub.status in ["pending", "reserved", "downloading", "inspecting"]:
+        if sub.torrent_hash and original_status in ["pending", "reserved", "downloading", "inspecting"]:
             try:
                 await qb_client.delete_torrent(sub.torrent_hash, delete_files=True)
                 logger.info(f"Deleted qB torrent [{sub.torrent_hash}] for submission #{sub.id}")

@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, desc
+from sqlalchemy.exc import IntegrityError
 from backend.models.user import User
 from backend.models.ledger import PointsLedger, SignInRecord
 from backend.models.submission import Submission
@@ -59,6 +60,7 @@ class PointsService:
         if not user:
             raise ValueError(f"User #{user_id} not found")
 
+        original_balance = user.balance
         user.balance += amount
         new_balance = user.balance
 
@@ -72,8 +74,21 @@ class PointsService:
             idempotency_key=idempotency_key,
             description=description
         )
-        await self.ledger_repo.add_entry(entry)
-        await self.db.flush()
+        # 与 deduct_points 一致：幂等键并发碰撞用 SAVEPOINT 兜底，
+        # 回滚本次加分并返回既有流水，绝不重复发币也绝不炸外层事务。
+        try:
+            async with self.db.begin_nested():
+                await self.ledger_repo.add_entry(entry)
+                await self.db.flush()
+        except IntegrityError:
+            user.balance = original_balance
+            dup = await self.ledger_repo.get_by_idempotency_key(idempotency_key)
+            logger.warning(
+                f"Points add idempotency collision caught via SAVEPOINT: {idempotency_key}, "
+                f"balance restored to {original_balance}"
+            )
+            return dup
+
         logger.info(f"User #{user_id} balance +{amount} -> {new_balance} [{event_type}] ({idempotency_key})")
         return entry
 
@@ -104,6 +119,7 @@ class PointsService:
         if not allow_negative and user.balance < amount:
             raise ValueError(f"软妹币余额不足 (当前: {user.balance}，需要: {amount})")
 
+        original_balance = user.balance
         user.balance -= amount
         new_balance = user.balance
 
@@ -117,8 +133,22 @@ class PointsService:
             idempotency_key=idempotency_key,
             description=description
         )
-        await self.ledger_repo.add_entry(entry)
-        await self.db.flush()
+        # 并发安全兜底：多进程/多请求同时命中同一幂等键时，先到者写入成功，
+        # 后到者被 UNIQUE 约束拦下。此处用 SAVEPOINT 捕获，回滚本次余额变动并
+        # 返回既有流水，绝不把整个外层事务打爆（否则删除请求会 500 且不扣分）。
+        try:
+            async with self.db.begin_nested():
+                await self.ledger_repo.add_entry(entry)
+                await self.db.flush()
+        except IntegrityError:
+            user.balance = original_balance
+            dup = await self.ledger_repo.get_by_idempotency_key(idempotency_key)
+            logger.warning(
+                f"Points deduct idempotency collision caught via SAVEPOINT: {idempotency_key}, "
+                f"balance restored to {original_balance}"
+            )
+            return dup
+
         logger.info(f"User #{user_id} balance -{amount} -> {new_balance} [{event_type}] ({idempotency_key})")
         return entry
 
