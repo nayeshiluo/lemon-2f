@@ -1,3 +1,4 @@
+import os
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -39,19 +40,57 @@ class SubmissionService:
         user_id: int,
         tmdb_id: int,
         media_type: str,
-        magnet_uri: str,
+        magnet_uri: Optional[str] = None,
+        source_type: str = "magnet",
+        resource_url: Optional[str] = None,
+        pan_type: Optional[str] = None,
+        share_code: Optional[str] = None,
         title: Optional[str] = None,
         year: Optional[int] = None,
         season: Optional[int] = None,
         episode: Optional[int] = None
     ) -> Submission:
-        magnet = magnet_uri.strip()
-        # 1. 提取并规范化 BTIH (支持 Base32 转 40位 Hex)
-        t_hash = qb_client.extract_hash_from_magnet(magnet)
-        if not t_hash:
-            raise ValueError("无效的磁力链接，未检测到有效 info_hash")
-
+        import hashlib
         canonical_media_type = self.task_service.get_canonical_tmdb_type(media_type)
+
+        # 1. 提取或生成唯一物理标识 Hash
+        if source_type == "magnet":
+            magnet = (magnet_uri or resource_url or "").strip()
+            if not magnet:
+                raise ValueError("磁力链接不能为空")
+            t_hash = qb_client.extract_hash_from_magnet(magnet)
+            if not t_hash:
+                raise ValueError("无效的磁力链接，未检测到有效 info_hash")
+            resource_url = magnet
+        elif source_type == "local_mount":
+            res_path = (resource_url or "").strip()
+            if not res_path or not os.path.exists(res_path):
+                raise ValueError(f"本地挂载路径不存在或无法访问: {res_path}")
+            t_hash = "local_" + hashlib.sha1(res_path.encode()).hexdigest()[:34]
+            magnet = ""
+        elif source_type == "direct_upload":
+            upload_path = (resource_url or "").strip()
+            if not upload_path or not os.path.exists(upload_path):
+                raise ValueError(f"上传文件路径异常: {upload_path}")
+            t_hash = "upload_" + hashlib.sha1(upload_path.encode()).hexdigest()[:33]
+            magnet = ""
+        elif source_type == "pan_share":
+            p_url = (resource_url or "").strip()
+            if not p_url:
+                raise ValueError("网盘分享链接不能为空")
+            if not pan_type:
+                if "guangya" in p_url:
+                    pan_type = "guangya"
+                elif "139.com" in p_url or "10086.cn" in p_url:
+                    pan_type = "cpmobile"
+                elif "quark.cn" in p_url:
+                    pan_type = "quark"
+                else:
+                    pan_type = "other"
+            t_hash = "pan_" + hashlib.sha1(f"{pan_type}:{p_url}".encode()).hexdigest()[:36]
+            magnet = ""
+        else:
+            raise ValueError(f"不支持的资源接口类型: {source_type}")
 
         # 2. 种子 Hash 活跃状态查重
         existing = await self.sub_repo.get_by_torrent_hash(t_hash)
@@ -165,9 +204,14 @@ class SubmissionService:
                 await self.db.execute(delete(SubmissionItem).where(SubmissionItem.submission_id == existing.id))
                 await self.db.execute(delete(DownloadJob).where(DownloadJob.submission_id == existing.id))
                 
-                existing.status = "pending"
+                initial_status = "inspecting" if source_type in ["local_mount", "direct_upload"] else "pending"
+                existing.status = initial_status
                 existing.user_id = user_id
                 existing.task_id = task.id
+                existing.source_type = source_type
+                existing.resource_url = resource_url
+                existing.pan_type = pan_type
+                existing.share_code = share_code
                 # 核心修复 P1-3: 同步刷新 tmdb_id 与 canonical_media_type，杜绝重试更换目标影视后的身份错位
                 existing.tmdb_id = tmdb_id
                 existing.media_type = canonical_media_type
@@ -176,6 +220,7 @@ class SubmissionService:
                 existing.title = title or task.title
                 existing.year = year or task.year
                 existing.magnet_uri = magnet
+                existing.torrent_hash = t_hash
                 existing.retry_count += 1
                 existing.error_message = None
                 existing.total_items_count = 0
@@ -187,6 +232,7 @@ class SubmissionService:
                 existing.updated_at = now
                 sub = existing
             else:
+                initial_status = "inspecting" if source_type in ["local_mount", "direct_upload"] else "pending"
                 sub = Submission(
                     user_id=user_id,
                     task_id=task.id,
@@ -196,9 +242,13 @@ class SubmissionService:
                     year=year or task.year,
                     target_season=season,
                     target_episode=episode,
+                    source_type=source_type,
+                    resource_url=resource_url,
+                    pan_type=pan_type,
+                    share_code=share_code,
                     magnet_uri=magnet,
                     torrent_hash=t_hash,
-                    status="pending",
+                    status=initial_status,
                     estimated_reward_points=expected_reward,
                     reward_points=0 # 初始实发严格为 0
                 )

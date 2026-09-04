@@ -187,6 +187,12 @@ class SubmissionPipelineService:
             await self._release_reservation(sub)
             return
 
+        # 多源分流：非磁力源 (本地挂载 / 直接视频上传 / 网盘分享) 已经就绪，直接跳过 qB 离线阶段，进入质检
+        if sub.source_type in ["local_mount", "direct_upload", "pan_share"]:
+            sub.status = "inspecting"
+            logger.info(f"Submission #{sub.id} ({sub.source_type}) -> INSPECTING directly (File ready on disk)")
+            return
+
         t_hash = sub.torrent_hash or qb_client.extract_hash_from_magnet(sub.magnet_uri)
         if not t_hash:
             sub.status = "rejected"
@@ -309,20 +315,31 @@ class SubmissionPipelineService:
             logger.info(f"Submission #{sub.id} -> INSPECTING (Download Complete)")
 
     async def _handle_inspecting(self, sub: Submission):
-        """阶段 3: 多视频文件扫描、目标单集严格限定与同集择优质检"""
+        """阶段 3: 多视频文件扫描、目标单集严格限定与同集择优质检 (支持任意原始命名自动 TMDB 规范重命名)"""
         task = await self._ensure_task_bound(sub)
-        job = sub.download_job
-        content_path = job.content_path if job else os.path.join(settings.QB_CONTAINER_DOWNLOAD_PATH, sub.title)
+        content_path = None
+        if sub.source_type in ["local_mount", "direct_upload"] and sub.resource_url and os.path.exists(sub.resource_url):
+            content_path = sub.resource_url
+        else:
+            stmt_job = select(DownloadJob).where(DownloadJob.submission_id == sub.id)
+            job_res = await self.db.execute(stmt_job)
+            job = job_res.scalar_one_or_none()
+            if job and job.content_path and os.path.exists(job.content_path):
+                content_path = job.content_path
+            else:
+                default_p = os.path.join(settings.QB_CONTAINER_DOWNLOAD_PATH, sub.title)
+                content_path = default_p
+
         if not content_path or not os.path.exists(content_path):
             sub.status = "failed"
-            sub.error_message = f"下载路径不存在: {content_path}"
+            sub.error_message = f"下载/源文件路径不存在: {content_path}"
             await self._release_reservation(sub)
             return
 
         video_files = ffprobe_qc.scan_video_files(content_path)
         if not video_files:
             sub.status = "rejected"
-            sub.error_message = "下载完成但未检索到有效主视频文件"
+            sub.error_message = "未检索到有效主视频文件"
             await self._release_reservation(sub)
             return
 
@@ -339,7 +356,10 @@ class SubmissionPipelineService:
                 key = (None, None)
             else:
                 if parsed_episode is None:
-                    if task.total_items_count == 1:
+                    # 关键特性：无论原始文件名多乱，只要用户指定了单集目标（或单集剧），直接作为目标单集录入！
+                    if sub.target_season is not None and sub.target_episode is not None:
+                        key = (sub.target_season, sub.target_episode)
+                    elif task.total_items_count == 1:
                         key = (1, 1)
                     else:
                         sub.status = "rejected"
@@ -363,11 +383,16 @@ class SubmissionPipelineService:
         if sub.target_season is not None and sub.target_episode is not None:
             target_key = (sub.target_season, sub.target_episode)
             if target_key not in candidates_by_episode:
-                sub.status = "rejected"
-                sub.error_message = f"REJECTED_TARGET_MISMATCH: 投稿指定目标为 S{sub.target_season:02d}E{sub.target_episode:02d}，但下载内容未包含该集"
-                await self._release_reservation(sub)
-                logger.warning(f"Submission #{sub.id} target mismatch: expected {target_key}, found {list(candidates_by_episode.keys())}")
-                return
+                # 无论原始命名是什么，只要质检通过且只有一个有效主视频，强制映射为用户选定的 TMDB 目标单集！
+                if len(candidates_by_episode) == 1:
+                    only_k = list(candidates_by_episode.keys())[0]
+                    candidates_by_episode[target_key] = candidates_by_episode.pop(only_k)
+                else:
+                    sub.status = "rejected"
+                    sub.error_message = f"REJECTED_TARGET_MISMATCH: 投稿指定目标为 S{sub.target_season:02d}E{sub.target_episode:02d}，但文件未匹配到该集"
+                    await self._release_reservation(sub)
+                    logger.warning(f"Submission #{sub.id} target mismatch: expected {target_key}, found {list(candidates_by_episode.keys())}")
+                    return
             candidates_by_episode = {target_key: candidates_by_episode[target_key]}
 
         items: List[SubmissionItem] = []

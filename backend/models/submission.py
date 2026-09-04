@@ -23,7 +23,13 @@ class Submission(Base):
     target_season = Column(Integer, nullable=True)
     target_episode = Column(Integer, nullable=True)
     
-    magnet_uri = Column(Text, nullable=False)
+    # 资源来源与接口扩展: magnet / local_mount / pan_share / direct_upload
+    source_type = Column(String(32), default="magnet", nullable=False)
+    resource_url = Column(Text, nullable=True)
+    pan_type = Column(String(32), nullable=True) # guangya / cpmobile / quark / other
+    share_code = Column(String(64), nullable=True)
+
+    magnet_uri = Column(Text, nullable=True, default="")
     torrent_hash = Column(String(64), index=True, nullable=True)
     retry_count = Column(Integer, default=0, nullable=False)
     
@@ -49,13 +55,13 @@ class Submission(Base):
     items = relationship("SubmissionItem", back_populates="submission", cascade="all, delete-orphan")
     download_job = relationship("DownloadJob", back_populates="submission", uselist=False, cascade="all, delete-orphan")
 
-# 1. 活跃状态下的种子 Hash 唯一索引 (允许 failed/rejected 重试)
+# 1. 活跃状态下的种子 Hash 唯一索引 (允许 failed/rejected 重试，非种子模式 Hash 为 NULL 不触发唯一约束)
 Index(
     "uq_active_submission_torrent_hash",
     Submission.torrent_hash,
     unique=True,
-    postgresql_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"]),
-    sqlite_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"])
+    postgresql_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"]) & Submission.torrent_hash.is_not(None),
+    sqlite_where=Submission.status.in_(["pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby", "accepted", "partial"]) & Submission.torrent_hash.is_not(None)
 )
 
 # 2. 同一目标单集在活跃状态下只能存在一个活跃 Submission

@@ -112,17 +112,30 @@ class SubmissionCreate(BaseModel):
     media_type: Literal["movie", "tv", "anime", "variety"] = Field(description="媒体类型")
     title: Optional[str] = None
     year: Optional[int] = None
-    magnet_uri: str = Field(min_length=10, description="磁力链接 Magnet URI")
+    source_type: Literal["magnet", "local_mount", "pan_share", "direct_upload"] = Field(default="magnet", description="资源接口类型")
+    magnet_uri: Optional[str] = Field(default=None, description="磁力链接 Magnet URI (source_type=magnet 时使用)")
+    resource_url: Optional[str] = Field(default=None, description="网盘分享链接或本地挂载路径")
+    pan_type: Optional[Literal["guangya", "cpmobile", "quark", "other"]] = Field(default=None, description="网盘类型")
+    share_code: Optional[str] = Field(default=None, description="网盘提取码")
     task_id: Optional[int] = None
     season: Optional[int] = Field(default=None, ge=0, le=100, description="目标季度 (S0 为特别篇)")
     episode: Optional[int] = Field(default=None, ge=1, le=2000, description="目标集数")
 
     @model_validator(mode="after")
     def validate_episodic_targets(self):
-        # 严格校验：剧集/动漫/综艺在 MVP 上线阶段必须指定具体目标季集 (杜绝假全包模式绕过预占防重)
+        # 严格校验：剧集/动漫/综艺必须指定具体目标季集
         if self.media_type != "movie":
             if self.season is None or self.episode is None:
                 raise ValueError("剧集/动漫/综艺投稿必须明确指定目标季度 (season>=0) 与单集序号 (episode>=1)")
+
+        if self.source_type == "magnet":
+            if not self.magnet_uri or not self.magnet_uri.strip().startswith("magnet:?"):
+                raise ValueError("磁力链接模式必须提供以 'magnet:?' 开头的有效磁力链接")
+            if not self.resource_url:
+                self.resource_url = self.magnet_uri
+        elif self.source_type in ["local_mount", "pan_share"]:
+            if not self.resource_url or not self.resource_url.strip():
+                raise ValueError(f"{'本地挂载模式' if self.source_type == 'local_mount' else '网盘分享模式'}必须提供有效的资源路径或分享链接")
         return self
 
 class SubmissionItemResponse(BaseModel):
@@ -152,6 +165,10 @@ class SubmissionResponse(BaseModel):
     year: Optional[int] = None
     target_season: Optional[int] = None
     target_episode: Optional[int] = None
+    source_type: str = "magnet"
+    resource_url: Optional[str] = None
+    pan_type: Optional[str] = None
+    share_code: Optional[str] = None
     torrent_hash: Optional[str] = None
     status: str
     error_message: Optional[str] = None
@@ -174,6 +191,7 @@ class PublicSubmissionResponse(BaseModel):
     year: Optional[int] = None
     target_season: Optional[int] = None
     target_episode: Optional[int] = None
+    source_type: str = "magnet"
     status: str
     total_items_count: int = 0
     accepted_items_count: int = 0
