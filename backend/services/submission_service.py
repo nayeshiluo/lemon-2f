@@ -1,9 +1,11 @@
 import os
+import tempfile
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
+from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
 from backend.config import settings
@@ -63,8 +65,18 @@ class SubmissionService:
                 raise ValueError("无效的磁力链接，未检测到有效 info_hash")
             resource_url = magnet
         elif source_type == "local_mount":
-            res_path = (resource_url or "").strip()
-            if not res_path or not os.path.exists(res_path):
+            res_path = os.path.abspath((resource_url or "").strip())
+            allowed_roots = [
+                os.path.abspath(settings.QB_CONTAINER_DOWNLOAD_PATH),
+                os.path.abspath(settings.MEDIA_MOVIES_CONTAINER_PATH),
+                os.path.abspath(settings.MEDIA_TV_CONTAINER_PATH),
+                os.path.abspath("/downloads"),
+                os.path.abspath("/media"),
+                os.path.abspath(tempfile.gettempdir())
+            ]
+            if not any(res_path == r or res_path.startswith(r + os.sep) for r in allowed_roots):
+                raise ValueError("安全拦截：本地挂载路径必须位于合法的下载或媒体目录内")
+            if not os.path.exists(res_path):
                 raise ValueError(f"本地挂载路径不存在或无法访问: {res_path}")
             t_hash = "local_" + hashlib.sha1(res_path.encode()).hexdigest()[:34]
             magnet = ""
@@ -279,7 +291,18 @@ class SubmissionService:
           - 用户自删：扣除实发积分的 N 倍 (默认 3 倍，配置项 SUBMISSION_DELETE_PENALTY_MULTIPLIER)
           - 管理员删片：可选 不扣分(no_deduct) / 倍数扣分(penalty_multiplier) / 自定义扣分(custom)
         """
-        sub = await self.sub_repo.get_by_id(submission_id)
+        # 核心并发安全：加行级悲观锁 SELECT FOR UPDATE，防止双击或并发重试导致重复删扣
+        stmt_lock = (
+            select(Submission)
+            .where(Submission.id == submission_id)
+            .options(
+                selectinload(Submission.items),
+                selectinload(Submission.download_job)
+            )
+            .with_for_update()
+        )
+        res_lock = await self.db.execute(stmt_lock)
+        sub = res_lock.scalar_one_or_none()
         if not sub:
             raise ValueError(f"投稿 #{submission_id} 不存在")
 
@@ -365,7 +388,7 @@ class SubmissionService:
                 raise ValueError(f"未知的删除动作: {action}")
 
         if points_to_deduct > 0:
-            idempotency_key = f"del_penalty_{sub.id}_{uuid.uuid4().hex[:12]}"
+            idempotency_key = f"del_penalty_{sub.id}"
             await points_service.deduct_points(
                 user_id=sub.user_id,
                 amount=points_to_deduct,
