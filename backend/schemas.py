@@ -238,3 +238,9 @@ class ShopItemResponse(BaseModel):
 
 class ShopExchangeRequest(BaseModel):
     item_id: int = Field(gt=0)
+
+class AdminDeleteSubmissionRequest(BaseModel):
+    action: str = Field(default="penalty_multiplier", description="no_deduct / penalty_multiplier / custom")
+    multiplier: Optional[float] = Field(default=None, description="惩罚倍数，默认使用系统配置")
+    custom_amount: Optional[int] = Field(default=None, ge=0, description="自定义扣分数量")
+    reason: Optional[str] = Field(default="", description="删除下架原因")

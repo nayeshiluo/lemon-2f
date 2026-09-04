@@ -36,6 +36,10 @@ class BaseDeliveryAdapter(ABC):
     ) -> str:
         pass
 
+    @abstractmethod
+    async def remove(self, dest_path: str) -> Tuple[bool, str]:
+        pass
+
 class LocalDeliveryAdapter(BaseDeliveryAdapter):
     """
     本地/挂载目录规范化交付实现 (支持 Hardlink / Copy / Move，跨挂载点自动降级)
@@ -174,6 +178,30 @@ class LocalDeliveryAdapter(BaseDeliveryAdapter):
         except Exception as e:
             logger.error(f"Delivery failed from {source_file} to {dest_path}: {e}")
             return False, f"交付执行异常: {str(e)}", ""
+
+    async def remove(self, dest_path: str) -> Tuple[bool, str]:
+        """安全物理删除已交付的目标文件并清理空目录"""
+        if not dest_path:
+            return True, "路径为空，无需清理"
+        if not os.path.exists(dest_path):
+            return True, "物理文件已不存在"
+        try:
+            if os.path.isfile(dest_path) or os.path.islink(dest_path):
+                os.remove(dest_path)
+                logger.info(f"Removed delivered file: {dest_path}")
+            parent = os.path.dirname(dest_path)
+            for _ in range(2):
+                if os.path.isdir(parent) and parent not in [self.movies_root, self.tv_root, "/", ""]:
+                    if not os.listdir(parent):
+                        os.rmdir(parent)
+                        logger.info(f"Cleaned empty parent folder: {parent}")
+                        parent = os.path.dirname(parent)
+                    else:
+                        break
+            return True, "物理清理成功"
+        except Exception as e:
+            logger.error(f"Failed to remove {dest_path}: {e}")
+            return False, f"物理文件清理异常: {e}"
 
 def get_delivery_adapter() -> BaseDeliveryAdapter:
     adapter_name = settings.DELIVERY_ADAPTER.lower().strip()

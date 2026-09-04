@@ -90,3 +90,25 @@ async def list_all_submissions(
         "page_size": page_size,
         "total_pages": total_pages
     }
+
+@router.post("/{submission_id}/delete")
+async def delete_my_submission(
+    submission_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    用户主动删除自己的问题资源：
+    若该投稿已实际结算发币，将强制按系统设定倍数（默认 3 倍）扣除惩罚积分！
+    物理下架文件并通知 Emby 刷新，重置缺集状态。
+    """
+    service = SubmissionService(db)
+    try:
+        res = await service.delete_submission(
+            submission_id=submission_id,
+            operator=current_user,
+            is_admin=False
+        )
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

@@ -14,6 +14,8 @@ from backend.clients.emby import emby_client
 from backend.clients.tmdb import tmdb_client
 from backend.repositories.user_repo import UserRepository
 from backend.services.points_service import PointsService
+from backend.services.submission_service import SubmissionService
+from backend.schemas import AdminDeleteSubmissionRequest
 from backend.config import settings
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -148,3 +150,67 @@ async def adjust_points(
         "adjusted_amount": amount,
         "new_balance": user.balance
     }
+
+@router.get("/users")
+async def list_admin_users(
+    page: int = 1,
+    page_size: int = 50,
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """管理员查看全量用户列表及资产总览"""
+    user_repo = UserRepository(db)
+    offset = (page - 1) * page_size
+    users = await user_repo.list_users(offset=offset, limit=page_size)
+    total_res = await db.execute(select(func.count(User.id)))
+    total = total_res.scalar() or 0
+
+    items = [
+        {
+            "id": u.id,
+            "username": u.username,
+            "role": u.role,
+            "balance": u.balance,
+            "is_active": u.is_active,
+            "emby_user_id": u.emby_user_id,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+            "last_sign_in": u.last_sign_in.isoformat() if u.last_sign_in else None,
+            "sign_in_streak": u.sign_in_streak
+        }
+        for u in users
+    ]
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if total > 0 else 1
+    }
+
+@router.post("/submissions/{submission_id}/delete")
+async def admin_delete_submission(
+    submission_id: int,
+    req: AdminDeleteSubmissionRequest,
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    管理员下架/删除指定资源：
+    - action='no_deduct': 不扣分，仅物理清理文件并重置缺集
+    - action='penalty_multiplier': 按系统配置或指定倍数惩罚扣除积分
+    - action='custom': 自定义自由扣除指定积分
+    """
+    service = SubmissionService(db)
+    try:
+        res = await service.delete_submission(
+            submission_id=submission_id,
+            operator=admin_user,
+            is_admin=True,
+            action=req.action,
+            multiplier=req.multiplier,
+            custom_amount=req.custom_amount,
+            reason=req.reason
+        )
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

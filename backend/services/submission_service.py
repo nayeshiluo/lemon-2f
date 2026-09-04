@@ -16,6 +16,9 @@ from backend.services.task_service import TaskService
 from backend.clients.emby import emby_client
 from backend.qb_client import qb_client
 from backend.redis_client import redis_manager
+from backend.delivery.adapter import get_delivery_adapter
+from backend.services.points_service import PointsService
+import uuid
 
 logger = logging.getLogger("lemon_2f.submission_service")
 
@@ -207,3 +210,140 @@ class SubmissionService:
             await redis_manager.signal_wake(f"new_submission:{sub.id}")
 
             return sub
+
+    async def delete_submission(
+        self,
+        submission_id: int,
+        operator: User,
+        is_admin: bool = False,
+        action: str = "penalty_multiplier",
+        multiplier: Optional[float] = None,
+        custom_amount: Optional[int] = None,
+        reason: Optional[str] = None
+    ) -> dict:
+        """
+        删除有问题的投稿/资源，并执行扣分处罚、物理落盘清理、Emby下架与缺集状态重置。
+        支持：
+          - 用户自删：扣除实发积分的 N 倍 (默认 3 倍，配置项 SUBMISSION_DELETE_PENALTY_MULTIPLIER)
+          - 管理员删片：可选 不扣分(no_deduct) / 倍数扣分(penalty_multiplier) / 自定义扣分(custom)
+        """
+        sub = await self.sub_repo.get_by_id(submission_id)
+        if not sub:
+            raise ValueError(f"投稿 #{submission_id} 不存在")
+
+        if not is_admin and sub.user_id != operator.id:
+            raise ValueError("无权删除其他用户的投稿")
+
+        if sub.status == "deleted":
+            raise ValueError("该投稿已处于删除状态，请勿重复操作")
+
+        # 1. 若处于下载/活跃阶段，尝试从 qBittorrent 停止并移除种子与临时文件
+        if sub.torrent_hash and sub.status in ["pending", "reserved", "downloading", "inspecting"]:
+            try:
+                await qb_client.delete_torrent(sub.torrent_hash, delete_files=True)
+                logger.info(f"Deleted qB torrent [{sub.torrent_hash}] for submission #{sub.id}")
+            except Exception as e:
+                logger.warning(f"Error removing torrent from qB: {e}")
+
+        # 2. 物理媒体文件安全清理
+        delivery_adapter = get_delivery_adapter()
+        for item in sub.items:
+            if item.dest_file:
+                success, msg = await delivery_adapter.remove(item.dest_file)
+                logger.info(f"Delivered file remove [{item.dest_file}]: {success} ({msg})")
+            item.status = "deleted"
+            item.error_message = f"已被 {'管理员 ' if is_admin else ''}[{operator.username}] 删除下架"
+
+        # 3. 回滚 TaskItem 与 MediaTask 状态（允许重新投稿补齐）
+        if sub.task_id:
+            for item in sub.items:
+                if item.task_item_id:
+                    t_item = await self.task_repo.db.get(TaskItem, item.task_item_id)
+                    if t_item and t_item.status in ["accepted", "reserved"]:
+                        t_item.status = "missing"
+                        t_item.reserved_by = None
+                        t_item.reserved_until = None
+                        t_item.accepted_submission_item_id = None
+
+            if sub.target_season is not None and sub.target_episode is not None:
+                t_item = await self.task_repo.get_item_by_season_episode(sub.task_id, sub.target_season, sub.target_episode)
+                if t_item and t_item.status in ["accepted", "reserved"]:
+                    t_item.status = "missing"
+                    t_item.reserved_by = None
+                    t_item.reserved_until = None
+                    t_item.accepted_submission_item_id = None
+
+            task = await self.task_repo.get_task_by_id(sub.task_id)
+            if task:
+                task_items = await self.task_repo.get_items_by_task_id(task.id)
+                accepted_count = sum(1 for it in task_items if it.status == "accepted")
+                task.accepted_items_count = accepted_count
+                if accepted_count < task.total_items_count:
+                    task.status = "missing"
+
+        # 4. 扣除积分与惩罚计算
+        points_service = PointsService(self.db)
+        points_to_deduct = 0
+        effective_multiplier = multiplier if multiplier is not None else settings.SUBMISSION_DELETE_PENALTY_MULTIPLIER
+
+        if not is_admin:
+            # 用户自删：若曾实发过积分，则按指定倍数（默认3倍）严厉扣除；若未发币仅撤回
+            if sub.reward_points > 0:
+                points_to_deduct = int(sub.reward_points * effective_multiplier)
+                event_type = "submission_delete_penalty"
+                desc = f"用户自行删除问题投稿《{sub.title}》，按 {effective_multiplier} 倍扣除 {points_to_deduct} 软妹币"
+            else:
+                points_to_deduct = 0
+                event_type = "submission_delete"
+                desc = f"用户撤回未入库投稿《{sub.title}》"
+        else:
+            # 管理员删片
+            event_type = "admin_delete_penalty"
+            if action == "penalty_multiplier":
+                points_to_deduct = int(sub.reward_points * effective_multiplier)
+                desc = f"管理员 [{operator.username}] 删除违规/问题资源《{sub.title}》，按 {effective_multiplier} 倍扣除 {points_to_deduct} 软妹币: {reason or '无备注'}"
+            elif action == "custom":
+                points_to_deduct = int(custom_amount or 0)
+                desc = f"管理员 [{operator.username}] 删除资源《{sub.title}》，自定义扣除 {points_to_deduct} 软妹币: {reason or '无备注'}"
+            elif action == "no_deduct":
+                points_to_deduct = 0
+                desc = f"管理员 [{operator.username}] 删除资源《{sub.title}》(不扣除积分): {reason or '无备注'}"
+            else:
+                raise ValueError(f"未知的删除动作: {action}")
+
+        if points_to_deduct > 0:
+            idempotency_key = f"del_penalty_{sub.id}_{uuid.uuid4().hex[:12]}"
+            await points_service.deduct_points(
+                user_id=sub.user_id,
+                amount=points_to_deduct,
+                event_type=event_type,
+                idempotency_key=idempotency_key,
+                description=desc,
+                ref_type="submission",
+                ref_id=str(sub.id),
+                allow_negative=True
+            )
+
+        # 5. 更新状态与审计信息
+        now = datetime.now(timezone.utc)
+        sub.status = "deleted"
+        sub.error_message = (
+            f"由 {'管理员 ' if is_admin else ''}[{operator.username}] 于 {now.strftime('%Y-%m-%d %H:%M:%S')} 删除下架"
+            + (f": {reason}" if reason else f" (扣除 {points_to_deduct} 软妹币)")
+        )
+        sub.updated_at = now
+
+        await self.db.commit()
+        await self.db.refresh(sub)
+
+        # 6. 触发 Emby 媒体库扫描以刷新下架
+        await emby_client.refresh_library()
+
+        return {
+            "success": True,
+            "submission_id": sub.id,
+            "status": "deleted",
+            "points_deducted": points_to_deduct,
+            "target_user_id": sub.user_id,
+            "message": f"资源已成功删除下架，扣除 {points_to_deduct} 软妹币"
+        }

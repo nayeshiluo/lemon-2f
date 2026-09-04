@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     MOVIE_UPLOAD_REWARD: int = 60
     EPISODE_UPLOAD_REWARD: int = 20
     RESOLUTION_4K_BONUS: int = 30
+    SUBMISSION_DELETE_PENALTY_MULTIPLIER: int = 3 # 资源问题删除惩罚倍数 (默认扣除3倍)
     
     # Telegram Bot
     TG_BOT_TOKEN: Optional[str] = Field(default=None)
