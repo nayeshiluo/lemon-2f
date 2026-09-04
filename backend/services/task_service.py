@@ -2,6 +2,7 @@ import logging
 from typing import Optional, Dict, Any, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, desc
 
 from backend.models.task import MediaTask, TaskItem
 from backend.repositories.task_repo import TaskRepository
@@ -172,3 +173,103 @@ class TaskService:
                 "can_submit": can_submit,
                 "seasons_detail": calc_res["seasons_detail"]
             }
+
+    async def get_missing_board(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        sort_by: str = "missing_count"
+    ) -> Dict[str, Any]:
+        """
+        全站剧集查缺补漏大厅看板：
+        查询所有状态为 missing 的剧集，实时比对缺集并按指标排序。
+        sort_by: 'missing_count' (缺集最多优先) | 'completion' (接近完结优先) | 'latest' (最新优先)
+        """
+        stmt = (
+            select(MediaTask)
+            .where(
+                MediaTask.media_type.in_(["tv", "anime", "variety"]),
+                MediaTask.status == "missing"
+            )
+            .order_by(desc(MediaTask.updated_at))
+        )
+        res = await self.db.execute(stmt)
+        tasks = list(res.scalars().all())
+
+        board_items = []
+        for t in tasks:
+            try:
+                report = await self.get_task_dedup_report(t.tmdb_id, t.media_type)
+                if report.get("missing_episodes_count", 0) > 0:
+                    board_items.append({
+                        "task_id": t.id,
+                        "tmdb_id": t.tmdb_id,
+                        "media_type": t.media_type,
+                        "title": t.title,
+                        "year": t.year,
+                        "poster_url": t.poster_path,
+                        "overview": t.overview,
+                        "total_episodes": report["total_episodes"],
+                        "accepted_episodes_count": report["accepted_episodes_count"],
+                        "missing_episodes_count": report["missing_episodes_count"],
+                        "completion_percent": report["completion_percent"],
+                        "missing_ranges_formatted": report["missing_ranges_formatted"],
+                        "status_label": report["status_label"],
+                        "can_submit": report["can_submit"]
+                    })
+            except Exception as e:
+                logger.warning(f"Error generating dedup report for task #{t.id}: {e}")
+
+        # 排序
+        if sort_by == "completion":
+            board_items.sort(key=lambda x: (x["completion_percent"], x["missing_episodes_count"]), reverse=True)
+        elif sort_by == "latest":
+            pass
+        else: # missing_count
+            board_items.sort(key=lambda x: (x["missing_episodes_count"], -x["completion_percent"]), reverse=True)
+
+        total = len(board_items)
+        offset = (page - 1) * page_size
+        paginated_items = board_items[offset : offset + page_size]
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+
+        return {
+            "items": paginated_items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages
+        }
+
+    async def sync_emby_series(self, limit: int = 100) -> Dict[str, Any]:
+        """
+        从 Emby 全量拉取已收录的剧集，提取 TMDB ID，并在本系统中自动同步建档为 MediaTask，
+        以便全站查缺补漏看板立即能识别并提示缺失的后续单集。
+        """
+        series_items = await emby_client.get_all_series(limit=limit)
+        synced_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        for it in series_items:
+            provider_ids = it.get("ProviderIds", {})
+            tmdb_id_str = provider_ids.get("Tmdb") or provider_ids.get("tmdb")
+            if not tmdb_id_str:
+                skipped_count += 1
+                continue
+            try:
+                tmdb_id = int(tmdb_id_str)
+                await self.get_or_create_task_from_tmdb(tmdb_id, media_type="tv")
+                synced_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to sync Emby series [{it.get('Name')}] (TMDB {tmdb_id_str}): {e}")
+                error_count += 1
+
+        await self.db.commit()
+        return {
+            "total_found_in_emby": len(series_items),
+            "synced": synced_count,
+            "skipped_no_tmdb": skipped_count,
+            "errors": error_count,
+            "message": f"成功从 Emby 同步 {synced_count} 部剧集到待补任务池"
+        }

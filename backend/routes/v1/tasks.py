@@ -139,3 +139,16 @@ async def list_tasks(
         "page_size": page_size,
         "total_pages": total_pages
     }
+
+@router.get("/missing-board")
+async def get_missing_board(
+    page: int = Query(default=1, ge=1, description="页码"),
+    page_size: int = Query(default=20, ge=1, le=50, description="每页条数"),
+    sort_by: str = Query(default="missing_count", pattern="^(missing_count|completion|latest)$", description="排序维度"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """全站剧集查缺补漏大厅 (实时计算 Emby 缺集与补齐进度看板)"""
+    task_service = TaskService(db)
+    result = await task_service.get_missing_board(page=page, page_size=page_size, sort_by=sort_by)
+    return result

@@ -97,6 +97,27 @@ class EmbyClient:
             logger.error(f"Emby get_series_episodes error: {e}")
             return []
 
+    async def get_all_series(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """获取 Emby 库内所有剧集条目 (携带 ProviderIds 用于与 TMDB 精确对账)"""
+        if not self.server_url or not self.api_key:
+            return []
+        url = f"{self.server_url}/emby/Items"
+        params = {
+            "Recursive": "true",
+            "IncludeItemTypes": "Series",
+            "Fields": "ProviderIds,Overview,Path,Name,ProductionYear",
+            "Limit": str(limit)
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                res = await client.get(url, params=params, headers=self._get_headers())
+                if res.status_code == 200:
+                    return res.json().get("Items", [])
+                return []
+        except Exception as e:
+            logger.error(f"Emby get_all_series error: {e}")
+            return []
+
     @staticmethod
     def _is_matching_physical_path(emby_path: str, expected_dest_path: str) -> bool:
         """

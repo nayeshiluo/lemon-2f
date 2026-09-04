@@ -15,6 +15,7 @@ from backend.clients.tmdb import tmdb_client
 from backend.repositories.user_repo import UserRepository
 from backend.services.points_service import PointsService
 from backend.services.submission_service import SubmissionService
+from backend.services.task_service import TaskService
 from backend.schemas import AdminDeleteSubmissionRequest, PointsRulesUpdateRequest
 from backend.config import settings
 
@@ -245,3 +246,14 @@ async def update_admin_points_config(
         "message": "系统积分规则已更新并立即热生效",
         "rules": updated
     }
+
+@router.post("/sync-emby-series")
+async def admin_sync_emby_series(
+    limit: int = 100,
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """管理员从 Emby 媒体库扫描并同步全部电视剧到待补剧集池"""
+    task_service = TaskService(db)
+    result = await task_service.sync_emby_series(limit=limit)
+    return result
