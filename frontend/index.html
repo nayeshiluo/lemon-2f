@@ -464,6 +464,172 @@
         </div>
       </div>
 
+      <!-- ================= Tab: 求片与众筹悬赏大厅 ================= -->
+      <div v-if="currentTab === 'wanted'" class="space-y-6">
+        <!-- 头部标题与控制栏 -->
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+              <span>🎯</span>
+              <span>求片与众筹悬赏大厅</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">想看冷门好片或缺失单集？投入软妹币众筹发起悬赏，呼唤全站压制组与各路大佬极速接单！</p>
+          </div>
+          <div class="flex items-center space-x-2">
+            <button @click="loadWantedList" class="text-xs text-purple-400 hover:text-purple-300 font-medium px-2 py-1">刷新大厅</button>
+            <button @click="showCreateWantedModal = true"
+                    class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg shadow-pink-500/25 transition flex items-center space-x-1.5">
+              <span>➕</span>
+              <span>发起求片悬赏</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 筛选与排序控制条 -->
+        <div class="glass-card rounded-2xl p-4 border border-slate-800 flex flex-wrap items-center justify-between gap-3">
+          <!-- 媒体分类 -->
+          <div class="flex items-center space-x-1">
+            <button v-for="cat in [
+              { id: '', label: '全部' },
+              { id: 'movie', label: '🎬 电影' },
+              { id: 'tv', label: '📺 剧集' }
+            ]" :key="cat.id"
+                    @click="wantedMediaType = cat.id; loadWantedList()"
+                    :class="wantedMediaType === cat.id ? 'bg-pink-600/30 text-pink-400 border-brand-pink/50' : 'text-slate-400 border-transparent hover:bg-slate-800/40'"
+                    class="px-2.5 py-1 text-xs rounded-lg border font-medium transition">
+              {{ cat.label }}
+            </button>
+          </div>
+
+          <!-- 状态筛选 -->
+          <div class="flex items-center space-x-1">
+            <button v-for="st in [
+              { id: 'all_active', label: '全部进行中' },
+              { id: 'open', label: '🎯 悬赏中' },
+              { id: 'claimed', label: '⏳ 认领筹备中' },
+              { id: 'completed', label: '✅ 已完成入库' }
+            ]" :key="st.id"
+                    @click="wantedStatus = st.id; loadWantedList()"
+                    :class="wantedStatus === st.id ? 'bg-purple-600/30 text-purple-300 border-purple-500/50' : 'text-slate-400 border-transparent hover:bg-slate-800/40'"
+                    class="px-2.5 py-1 text-xs rounded-lg border font-medium transition">
+              {{ st.label }}
+            </button>
+          </div>
+
+          <!-- 排序 -->
+          <div class="flex items-center space-x-1.5 text-xs text-slate-400">
+            <span>排序:</span>
+            <select v-model="wantedSortBy" @change="loadWantedList"
+                    class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-2 py-1 outline-none">
+              <option value="bounty">🪙 赏金最高</option>
+              <option value="backers">👥 最多人想看</option>
+              <option value="latest">⏱️ 最新发起</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 悬赏卡片网格 -->
+        <div v-if="isLoadingWanted" class="text-center py-16 text-slate-400 text-xs">
+          <div class="inline-block animate-spin text-2xl mb-2">🌀</div>
+          <p>正在拉取最新众筹悬赏池...</p>
+        </div>
+
+        <div v-else-if="wantedItems.length === 0" class="glass-card rounded-2xl p-12 text-center space-y-3">
+          <div class="text-4xl">🎯</div>
+          <p class="text-sm text-slate-400">当前筛选条件下暂无求片任务，您可以抢先发起全站首个众筹悬赏！</p>
+          <button @click="showCreateWantedModal = true" class="bg-gradient-to-r from-pink-600 to-purple-600 text-white text-xs font-bold px-4 py-2 rounded-xl">发起求片</button>
+        </div>
+
+        <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div v-for="item in wantedItems" :key="item.id"
+               class="glass-card rounded-2xl p-5 border border-slate-800 hover:border-brand-pink/40 transition flex flex-col justify-between space-y-4">
+            <!-- 头部标题与奖金 -->
+            <div>
+              <div class="flex items-start justify-between gap-2">
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center space-x-2">
+                    <span class="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                      {{ item.media_type === 'movie' ? '🎬 电影' : '📺 剧集' }}
+                    </span>
+                    <span v-if="item.season !== null" class="text-xs font-bold text-pink-400 font-mono">
+                      S{{ String(item.season).padStart(2, '0') }}E{{ String(item.episode).padStart(2, '0') }}
+                    </span>
+                    <span v-if="item.year" class="text-xs text-slate-500 font-mono">({{ item.year }})</span>
+                  </div>
+                  <h3 class="text-base font-bold text-white mt-1 truncate" :title="item.title">{{ item.title }}</h3>
+                  <div class="text-[11px] text-slate-500 font-mono mt-0.5">TMDB ID: {{ item.tmdb_id }}</div>
+                </div>
+                <!-- 赏金大徽章 -->
+                <div class="text-right flex-shrink-0">
+                  <div class="text-lg font-black font-['Orbitron'] neon-text-pink flex items-center justify-end space-x-1">
+                    <span>🪙</span>
+                    <span>{{ item.bounty_points }}</span>
+                  </div>
+                  <div class="text-[10px] text-purple-400 font-medium mt-0.5">
+                    {{ item.backer_count || 1 }} 人众筹支持
+                  </div>
+                </div>
+              </div>
+
+              <!-- 状态提示栏 -->
+              <div class="mt-3 flex items-center justify-between text-xs">
+                <span v-if="item.status === 'open'" class="px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-400 font-medium">
+                  🎯 悬赏开放中 · 等待认领
+                </span>
+                <span v-else-if="item.status === 'claimed'" class="px-2 py-0.5 rounded-full bg-amber-950/60 border border-amber-500/40 text-amber-400 font-medium">
+                  ⏳ 已被接单筹备中 (24h保护)
+                </span>
+                <span v-else-if="item.status === 'completed'" class="px-2 py-0.5 rounded-full bg-blue-950/60 border border-blue-500/40 text-blue-400 font-medium">
+                  ✅ 已成功入库发放
+                </span>
+                <span v-else class="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">
+                  {{ item.status }}
+                </span>
+              </div>
+            </div>
+
+            <!-- 操作按钮组 -->
+            <div class="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
+              <div class="flex items-center space-x-1.5">
+                <!-- 加码众筹 -->
+                <button v-if="item.status === 'open' || item.status === 'claimed'"
+                        @click="openCrowdfundModal(item)"
+                        class="px-2.5 py-1 rounded-lg bg-purple-900/40 border border-purple-500/40 hover:bg-purple-800/60 text-purple-300 text-xs font-bold transition">
+                  ➕ 加码
+                </button>
+                <!-- 撤销退款 (仅发起人在 open 状态) -->
+                <button v-if="item.status === 'open' && user && (item.creator_id === user.id || user.role === 'admin' || user.role === 'owner')"
+                        @click="handleCancelWanted(item)"
+                        class="px-2 py-1 rounded-lg text-slate-500 hover:text-red-400 text-xs transition"
+                        title="取消求片并全额退还押金">
+                  撤销
+                </button>
+              </div>
+
+              <div class="flex items-center space-x-2">
+                <!-- 认领按钮 -->
+                <button v-if="item.status === 'open'"
+                        @click="handleClaimWanted(item)"
+                        class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition">
+                  ✋ 认领接单
+                </button>
+                <button v-else-if="item.status === 'claimed' && user && item.claimant_id === user.id"
+                        @click="handleUnclaimWanted(item)"
+                        class="px-2.5 py-1.5 rounded-xl bg-slate-800/80 hover:bg-red-900/40 text-slate-400 hover:text-red-300 text-xs font-medium transition">
+                  放弃认领
+                </button>
+
+                <!-- 一键投稿 -->
+                <button @click="quickFillSubmitFromWanted(item)"
+                        class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow transition">
+                  📦 立即交付
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ================= Tab 3: 我的投稿 & 任务 ================= -->
       <div v-if="currentTab === 'submissions'" class="space-y-6">
         <div class="flex items-center justify-between">
@@ -885,6 +1051,114 @@
 
     </main>
 
+    <!-- 发起求片悬赏模态框 -->
+    <div v-if="showCreateWantedModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div class="glass-card max-w-lg w-full p-6 rounded-2xl border border-brand-pink/50 shadow-2xl space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <span class="text-xl">🎯</span>
+            <h3 class="text-lg font-bold text-white">发起求片悬赏众筹</h3>
+          </div>
+          <button @click="showCreateWantedModal = false" class="text-slate-400 hover:text-white">✕</button>
+        </div>
+
+        <div class="space-y-3 text-xs">
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">媒体类型</label>
+              <select v-model="createWantedForm.media_type" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none">
+                <option value="tv">📺 电视剧/动漫/综艺</option>
+                <option value="movie">🎬 电影</option>
+              </select>
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">TMDB ID</label>
+              <input v-model.number="createWantedForm.tmdb_id" type="number" placeholder="例如 112191" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none">
+            </div>
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-300 mb-1">影视官方标题</label>
+            <input v-model="createWantedForm.title" type="text" placeholder="如：凡人修仙传 / 遮天" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none">
+          </div>
+
+          <div v-if="createWantedForm.media_type !== 'movie'" class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">目标季度 (Season)</label>
+              <input v-model.number="createWantedForm.season" type="number" min="0" placeholder="例如 1" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none">
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">目标单集 (Episode)</label>
+              <input v-model.number="createWantedForm.episode" type="number" min="1" placeholder="例如 15" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">年份 (可选)</label>
+              <input v-model.number="createWantedForm.year" type="number" placeholder="例如 2026" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none">
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">初始悬赏软妹币 (10~5000)</label>
+              <input v-model.number="createWantedForm.bounty_points" type="number" min="10" max="5000" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-pink-400 font-bold outline-none">
+            </div>
+          </div>
+
+          <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800 text-[11px] text-slate-400 space-y-1">
+            <p>💡 发起悬赏将从您的可用软妹币余额中扣除并冻结托管。</p>
+            <p>💡 若有压制组入库成功，悬赏将全额结算给交付者；若取消求片，押金原路全额退款。</p>
+            <p v-if="user" class="text-purple-300 font-semibold">当前您的可用余额: 🪙 {{ user.balance }} 软妹币</p>
+          </div>
+        </div>
+
+        <div class="flex gap-2 pt-2">
+          <button @click="showCreateWantedModal = false" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold py-2.5 rounded-xl">取消</button>
+          <button @click="submitCreateWanted" :disabled="isCreatingWanted" class="flex-1 bg-gradient-to-r from-pink-600 to-purple-600 text-white text-sm font-bold py-2.5 rounded-xl disabled:opacity-50">
+            {{ isCreatingWanted ? '提交中...' : '立即发布悬赏' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 加码众筹弹窗 -->
+    <div v-if="showCrowdfundModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div class="glass-card max-w-sm w-full p-6 rounded-2xl border border-brand-pink/50 shadow-2xl space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <span class="text-xl">➕</span>
+            <h3 class="text-base font-bold text-white">加码众筹催更</h3>
+          </div>
+          <button @click="showCrowdfundModal = false" class="text-slate-400 hover:text-white">✕</button>
+        </div>
+
+        <div v-if="crowdfundTarget" class="space-y-3 text-xs">
+          <div class="p-3 bg-slate-900/60 rounded-xl border border-slate-800">
+            <div class="font-bold text-white text-sm">{{ crowdfundTarget.title }}</div>
+            <div class="text-slate-400 text-[11px] mt-0.5">
+              {{ crowdfundTarget.media_type === 'movie' ? '电影' : `S${String(crowdfundTarget.season).padStart(2,'0')}E${String(crowdfundTarget.episode).padStart(2,'0')}` }}
+              · 当前奖池 🪙 {{ crowdfundTarget.bounty_points }}
+            </div>
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-300 mb-1">追加软妹币金额 (10–5000)</label>
+            <input v-model.number="crowdfundPoints" type="number" min="10" max="5000" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-pink-400 font-bold outline-none">
+          </div>
+
+          <div v-if="user" class="text-[11px] text-purple-300">
+            当前可用余额: 🪙 {{ user.balance }} 软妹币
+          </div>
+        </div>
+
+        <div class="flex gap-2 pt-2">
+          <button @click="showCrowdfundModal = false" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold py-2 rounded-xl">取消</button>
+          <button @click="submitCrowdfund" :disabled="isCrowdfunding" class="flex-1 bg-gradient-to-r from-pink-600 to-purple-600 text-white text-sm font-bold py-2 rounded-xl disabled:opacity-50">
+            {{ isCrowdfunding ? '处理中...' : '确认加码' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 登录模态框 -->
     <div v-if="showLoginModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div class="glass-card max-w-md w-full p-6 rounded-2xl border border-brand-pink/50 shadow-2xl space-y-5">
@@ -1193,6 +1467,30 @@
         const missingSortBy = ref('missing_count')
         const isLoadingMissingBoard = ref(false)
 
+        // 求片与众筹悬赏大厅状态
+        const wantedItems = ref([])
+        const isLoadingWanted = ref(false)
+        const wantedSortBy = ref('bounty')
+        const wantedMediaType = ref('')
+        const wantedStatus = ref('all_active')
+
+        const showCreateWantedModal = ref(false)
+        const createWantedForm = ref({
+          tmdb_id: '',
+          media_type: 'tv',
+          title: '',
+          year: '',
+          season: 1,
+          episode: 1,
+          bounty_points: 50
+        })
+        const isCreatingWanted = ref(false)
+
+        const showCrowdfundModal = ref(false)
+        const crowdfundTarget = ref(null)
+        const crowdfundPoints = ref(20)
+        const isCrowdfunding = ref(false)
+
         const loginForm = ref({ username: '', password: '' })
         const searchQuery = ref('')
         const searchResults = ref([])
@@ -1222,8 +1520,9 @@
         const navTabs = computed(() => {
           const list = [
             { id: 'home', name: '首页大屏', icon: '🏠' },
-            { id: 'leaderboard', name: '英雄榜', icon: '🏆' },
+            { id: 'wanted', name: '求片大厅', icon: '🎯' },
             { id: 'dedup', name: '查重投稿', icon: '🔍' },
+            { id: 'leaderboard', name: '英雄榜', icon: '🏆' },
             { id: 'submissions', name: '我的任务', icon: '📦' },
             { id: 'shop', name: '二楼商城', icon: '🛍️' },
             { id: 'ledger', name: '软妹币账本', icon: '📜' },
@@ -1641,6 +1940,214 @@
           }
         }
 
+        // ============ 求片与众筹悬赏大厅 ============
+        const loadWantedList = async () => {
+          isLoadingWanted.value = true
+          try {
+            const params = new URLSearchParams({
+              limit: 60,
+              offset: 0,
+              sort_by: wantedSortBy.value,
+              status: wantedStatus.value
+            })
+            if (wantedMediaType.value) {
+              params.append('media_type', wantedMediaType.value)
+            }
+            const res = await fetch(`/api/wanted/list?${params.toString()}`, { headers: getAuthHeaders() })
+            if (res.ok) {
+              wantedItems.value = await res.json()
+            }
+          } catch (e) {
+            console.error('加载求片大厅失败:', e)
+          } finally {
+            isLoadingWanted.value = false
+          }
+        }
+
+        const submitCreateWanted = async () => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          const f = createWantedForm.value
+          if (!f.tmdb_id || !f.title) {
+            alert('请完整填写 TMDB ID 与影视官方片名')
+            return
+          }
+          if (f.media_type !== 'movie' && (f.season === null || f.episode === null)) {
+            alert('剧集悬赏必须指定目标季数与单集序号')
+            return
+          }
+          if (f.bounty_points < 10) {
+            alert('初始悬赏软妹币不得少于 10 🪙')
+            return
+          }
+          if (user.value.balance < f.bounty_points) {
+            alert(`您的软妹币余额不足 (当前 ${user.value.balance} 🪙)，无法发起 ${f.bounty_points} 🪙 悬赏`)
+            return
+          }
+
+          isCreatingWanted.value = true
+          try {
+            const payload = {
+              tmdb_id: Number(f.tmdb_id),
+              media_type: f.media_type,
+              title: f.title.trim(),
+              year: f.year ? Number(f.year) : null,
+              season: f.media_type === 'movie' ? null : Number(f.season),
+              episode: f.media_type === 'movie' ? null : Number(f.episode),
+              bounty_points: Number(f.bounty_points)
+            }
+            const res = await fetch('/api/wanted/', {
+              method: 'POST',
+              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert(`🎉 成功发起《${f.title}》求片悬赏！冻结 ${f.bounty_points} 软妹币押金。`)
+              showCreateWantedModal.value = false
+              fetchUserProfile()
+              loadWantedList()
+            } else {
+              alert(data.detail || '发起求片失败')
+            }
+          } catch (e) {
+            alert('网络异常: ' + e.message)
+          } finally {
+            isCreatingWanted.value = false
+          }
+        }
+
+        const openCrowdfundModal = (item) => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          crowdfundTarget.value = item
+          crowdfundPoints.value = 20
+          showCrowdfundModal.value = true
+        }
+
+        const submitCrowdfund = async () => {
+          if (!crowdfundTarget.value) return
+          if (crowdfundPoints.value < 10) {
+            alert('追加众筹金额不得少于 10 软妹币')
+            return
+          }
+          if (user.value && user.value.balance < crowdfundPoints.value) {
+            alert(`您的软妹币余额不足 (当前 ${user.value.balance} 🪙)`)
+            return
+          }
+
+          isCrowdfunding.value = true
+          try {
+            const res = await fetch(`/api/wanted/${crowdfundTarget.value.id}/crowdfund`, {
+              method: 'POST',
+              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({ points: crowdfundPoints.value })
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert(`🎉 ${data.message}`)
+              showCrowdfundModal.value = false
+              fetchUserProfile()
+              loadWantedList()
+            } else {
+              alert(data.detail || '追加众筹失败')
+            }
+          } catch (e) {
+            alert('网络异常: ' + e.message)
+          } finally {
+            isCrowdfunding.value = false
+          }
+        }
+
+        const handleClaimWanted = async (item) => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          if (!confirm(`确认认领《${item.title}》吗？认领后将拥有 24 小时独占上传保护期，入库成功可独揽 🪙 ${item.bounty_points} 软妹币悬赏！`)) return
+
+          try {
+            const res = await fetch(`/api/wanted/${item.id}/claim`, {
+              method: 'POST',
+              headers: getAuthHeaders()
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert(`✋ ${data.message}`)
+              loadWantedList()
+            } else {
+              alert(data.detail || '认领失败')
+            }
+          } catch (e) {
+            alert('网络异常: ' + e.message)
+          }
+        }
+
+        const handleUnclaimWanted = async (item) => {
+          if (!confirm(`确认放弃认领《${item.title}》吗？该任务将重新开放给全站其他用户认领。`)) return
+          try {
+            const res = await fetch(`/api/wanted/${item.id}/unclaim`, {
+              method: 'POST',
+              headers: getAuthHeaders()
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert(data.message)
+              loadWantedList()
+            } else {
+              alert(data.detail || '操作失败')
+            }
+          } catch (e) {
+            alert('网络异常: ' + e.message)
+          }
+        }
+
+        const handleCancelWanted = async (item) => {
+          if (!confirm(`确认撤销《${item.title}》的求片悬赏吗？撤销后全站众筹押金将原路全额解冻退款给各位支持者。`)) return
+          try {
+            const res = await fetch(`/api/wanted/${item.id}/cancel`, {
+              method: 'POST',
+              headers: getAuthHeaders()
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert(`✅ ${data.message}`)
+              fetchUserProfile()
+              loadWantedList()
+            } else {
+              alert(data.detail || '撤销失败')
+            }
+          } catch (e) {
+            alert('网络异常: ' + e.message)
+          }
+        }
+
+        const quickFillSubmitFromWanted = (item) => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          targetMedia.value = {
+            tmdb_id: item.tmdb_id,
+            media_type: item.media_type,
+            title: item.title,
+            year: item.year
+          }
+          targetSeason.value = item.season || 1
+          targetEpisode.value = item.episode || null
+          submitSourceType.value = 'magnet'
+          submitMagnet.value = ''
+          submitResourceUrl.value = ''
+          submitShareCode.value = ''
+          selectedUploadFile.value = null
+          if (directFileInput.value) directFileInput.value.value = ''
+          showSubmitModal.value = true
+        }
+
         // ============ 管理员动态积分配置 ============
         const loadAdminPointsConfig = async () => {
           if (!user.value || (user.value.role !== 'admin' && user.value.role !== 'owner')) return
@@ -1898,9 +2405,11 @@
           loadTgBindStatus()
           loadLeaderboard()
           loadMissingBoard()
+          loadWantedList()
         })
 
         watch(currentTab, (tab) => {
+          if (tab === 'wanted') loadWantedList()
           if (tab === 'leaderboard') loadLeaderboard()
           if (tab === 'dedup') loadMissingBoard()
           if (tab === 'submissions') loadMySubmissions()
@@ -1948,6 +2457,26 @@
           setMissingSort,
           loadMissingBoard,
           handleSyncEmbySeries,
+          wantedItems,
+          isLoadingWanted,
+          wantedSortBy,
+          wantedMediaType,
+          wantedStatus,
+          showCreateWantedModal,
+          createWantedForm,
+          isCreatingWanted,
+          showCrowdfundModal,
+          crowdfundTarget,
+          crowdfundPoints,
+          isCrowdfunding,
+          loadWantedList,
+          submitCreateWanted,
+          openCrowdfundModal,
+          submitCrowdfund,
+          handleClaimWanted,
+          handleUnclaimWanted,
+          handleCancelWanted,
+          quickFillSubmitFromWanted,
           leaderboardCategory,
           leaderboardTimespan,
           leaderboardItems,

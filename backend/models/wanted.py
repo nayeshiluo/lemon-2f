@@ -18,7 +18,7 @@ CANCELLABLE_BOUNTY_STATUSES = ("open",)
 
 
 class WantedTask(Base):
-    """求片与缺集悬赏池"""
+    """求片与缺集众筹悬赏池"""
     __tablename__ = "wanted_tasks"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -33,13 +33,18 @@ class WantedTask(Base):
     season = Column(Integer, nullable=True)
     episode = Column(Integer, nullable=True)
     
-    # 悬赏软妹币 (发布时必须真实 Escrow 冻结/扣除)
+    # 悬赏软妹币总池 (发布时真实 Escrow 冻结，支持多人众筹跟投累加)
     bounty_points = Column(Integer, default=50, nullable=False)
+    
+    # 众筹支持者人数
+    backer_count = Column(Integer, default=1, nullable=False)
     
     # 状态: open (悬赏中), claimed (已认领), completed (已完成结算), cancelled (已取消退款)
     status = Column(String(32), default="open", index=True, nullable=False)
     
     claimant_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
+    claim_expires_at = Column(DateTime(timezone=True), nullable=True)
     submission_item_id = Column(Integer, ForeignKey("submission_items.id"), nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -47,6 +52,23 @@ class WantedTask(Base):
 
     creator = relationship("User", foreign_keys=[creator_id])
     claimant = relationship("User", foreign_keys=[claimant_id])
+    backers = relationship("WantedBacker", back_populates="wanted", cascade="all, delete-orphan", lazy="selectin")
+
+
+class WantedBacker(Base):
+    """求片众筹支持记录 (支持多人加码众筹催更)"""
+    __tablename__ = "wanted_backers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    wanted_id = Column(Integer, ForeignKey("wanted_tasks.id", ondelete="CASCADE"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    points = Column(Integer, nullable=False) # 本次追加的软妹币
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    wanted = relationship("WantedTask", back_populates="backers")
+    user = relationship("User", lazy="selectin")
+
 
 # 索引优化精准悬赏匹配
 Index("idx_wanted_exact_target", WantedTask.tmdb_id, WantedTask.media_type, WantedTask.season, WantedTask.episode)
+Index("idx_wanted_status_bounty", WantedTask.status, WantedTask.bounty_points)

@@ -217,7 +217,7 @@ class SignInResponse(BaseModel):
     new_balance: int
     message: str
 
-# --- 悬赏 ---
+# --- 悬赏与众筹求片 ---
 class WantedCreate(BaseModel):
     tmdb_id: int = Field(gt=0)
     media_type: Literal["movie", "tv", "anime", "variety"] = "tv"
@@ -225,7 +225,18 @@ class WantedCreate(BaseModel):
     year: Optional[int] = None
     season: Optional[int] = Field(default=1, ge=0)
     episode: Optional[int] = Field(default=1, ge=1)
-    bounty_points: int = Field(default=50, ge=10, le=1000)
+    bounty_points: int = Field(default=50, ge=10, le=5000, description="初始悬赏软妹币")
+
+class WantedCrowdfundRequest(BaseModel):
+    points: int = Field(ge=10, le=5000, description="追加众筹软妹币金额")
+
+class WantedBackerResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    points: int
+    created_at: datetime
 
 class WantedResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -235,10 +246,15 @@ class WantedResponse(BaseModel):
     tmdb_id: int
     media_type: str
     title: str
+    year: Optional[int] = None
     season: Optional[int] = None
     episode: Optional[int] = None
     bounty_points: int
+    backer_count: int = 1
     status: str
+    claimant_id: Optional[int] = None
+    claimed_at: Optional[datetime] = None
+    claim_expires_at: Optional[datetime] = None
     created_at: datetime
 
 # --- 商城 ---
