@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     SIGN_IN_MAX_COINS: int = 20
     MOVIE_UPLOAD_REWARD: int = 60
     EPISODE_UPLOAD_REWARD: int = 20
+    SUBTITLE_UPLOAD_REWARD: int = 10
     RESOLUTION_4K_BONUS: int = 30
     SUBMISSION_DELETE_PENALTY_MULTIPLIER: int = 3 # 资源问题删除惩罚倍数 (默认扣除3倍)
     

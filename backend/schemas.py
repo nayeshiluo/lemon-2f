@@ -282,9 +282,33 @@ class AdminDeleteSubmissionRequest(BaseModel):
 class PointsRulesUpdateRequest(BaseModel):
     MOVIE_UPLOAD_REWARD: Optional[int] = Field(default=None, ge=0)
     EPISODE_UPLOAD_REWARD: Optional[int] = Field(default=None, ge=0)
+    SUBTITLE_UPLOAD_REWARD: Optional[int] = Field(default=None, ge=0)
     RESOLUTION_4K_BONUS: Optional[int] = Field(default=None, ge=0)
     SIGN_IN_MIN_COINS: Optional[int] = Field(default=None, ge=0)
     SIGN_IN_MAX_COINS: Optional[int] = Field(default=None, ge=0)
     SIGN_IN_STREAK_BONUS_PER_DAY: Optional[int] = Field(default=None, ge=0)
     SIGN_IN_STREAK_BONUS_CAP: Optional[int] = Field(default=None, ge=0)
     SUBMISSION_DELETE_PENALTY_MULTIPLIER: Optional[int] = Field(default=None, ge=1)
+
+# --- 外挂字幕 ---
+class SubtitleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    tmdb_id: int
+    media_type: str
+    title: str
+    year: Optional[int] = None
+    season: Optional[int] = None
+    episode: Optional[int] = None
+    language: str
+    is_default: bool
+    is_forced: bool
+    file_format: str
+    file_size: int
+    dest_path: str
+    status: str
+    reward_points: int
+    created_at: datetime
+

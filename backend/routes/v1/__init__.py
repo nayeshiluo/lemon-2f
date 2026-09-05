@@ -1,3 +1,3 @@
-from . import auth, tasks, submissions, points, wanted, shop, admin
+from . import auth, tasks, submissions, points, wanted, subtitles, shop, admin
 
-__all__ = ["auth", "tasks", "submissions", "points", "wanted", "shop", "admin"]
+__all__ = ["auth", "tasks", "submissions", "points", "wanted", "subtitles", "shop", "admin"]
