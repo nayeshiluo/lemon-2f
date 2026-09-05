@@ -630,6 +630,163 @@
         </div>
       </div>
 
+      <!-- ================= Tab: 观影足迹与赛博日历 ================= -->
+      <div v-if="currentTab === 'calendar'" class="space-y-6">
+        <!-- 头部标题与年月切换 -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+              <span>📅</span>
+              <span>Emby 观影足迹与赛博日历</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">记录你在二楼 Emby 每一天的追剧足迹，每日看片满 30 分钟即可自动激活软妹币打卡奖励！</p>
+          </div>
+          <div class="flex items-center space-x-2">
+            <button @click="changeWatchMonth(-1)" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition">◀ 上个月</button>
+            <span class="px-3 py-1.5 rounded-xl bg-purple-950/60 border border-purple-500/40 text-purple-300 font-mono text-sm font-bold">{{ watchCalendarMonth }}</span>
+            <button @click="changeWatchMonth(1)" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition">下个月 ▶</button>
+          </div>
+        </div>
+
+        <!-- 今日观影打卡进度条 -->
+        <div class="glass-card rounded-2xl p-4 border border-brand-pink/30 flex flex-col md:flex-row items-center justify-between gap-4 bg-gradient-to-r from-pink-950/20 to-purple-950/20">
+          <div class="flex items-center space-x-3 w-full md:w-auto">
+            <div class="w-10 h-10 rounded-xl bg-pink-500/20 border border-brand-pink/50 flex items-center justify-center text-xl">
+              {{ watchSummary.today_reward_claimed ? '🎉' : '⏱️' }}
+            </div>
+            <div>
+              <div class="text-sm font-bold text-white flex items-center space-x-2">
+                <span>今日观影打卡</span>
+                <span v-if="watchSummary.today_reward_claimed" class="text-xs px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-400 border border-emerald-500/40">已领 5 🪙</span>
+                <span v-else class="text-xs px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-400 border border-amber-500/40">进行中</span>
+              </div>
+              <div class="text-xs text-slate-400 mt-0.5">
+                今日已观影 {{ Math.floor((watchSummary.today_seconds || 0) / 60) }} 分钟 / 满 30 分钟赠 5 🪙
+              </div>
+            </div>
+          </div>
+          <!-- 进度条 -->
+          <div class="w-full md:w-72">
+            <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden">
+              <div class="bg-gradient-to-r from-pink-500 to-purple-500 h-2.5 rounded-full transition-all duration-500"
+                   :style="{ width: `${Math.min(100, Math.round(((watchSummary.today_seconds || 0) / 1800) * 100))}%` }"></div>
+            </div>
+            <div class="text-right text-[10px] text-purple-400 mt-1 font-mono font-bold">
+              {{ Math.min(100, Math.round(((watchSummary.today_seconds || 0) / 1800) * 100)) }}% 完成
+            </div>
+          </div>
+        </div>
+
+        <!-- 月度统计四宫格 -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div class="glass-card rounded-2xl p-4 border border-slate-800">
+            <div class="text-xs text-slate-400">本月观影总时长</div>
+            <div class="text-xl font-black font-['Orbitron'] text-pink-400 mt-1">
+              {{ Math.floor((watchSummary.total_seconds || 0) / 3600) }}h {{ Math.floor(((watchSummary.total_seconds || 0) % 3600) / 60) }}m
+            </div>
+          </div>
+          <div class="glass-card rounded-2xl p-4 border border-slate-800">
+            <div class="text-xs text-slate-400">观看电视剧集</div>
+            <div class="text-xl font-black font-['Orbitron'] text-purple-400 mt-1">
+              {{ watchSummary.total_episodes || 0 }} <span class="text-xs font-normal text-slate-500">集</span>
+            </div>
+          </div>
+          <div class="glass-card rounded-2xl p-4 border border-slate-800">
+            <div class="text-xs text-slate-400">观看电影作品</div>
+            <div class="text-xl font-black font-['Orbitron'] text-cyan-400 mt-1">
+              {{ watchSummary.total_movies || 0 }} <span class="text-xs font-normal text-slate-500">部</span>
+            </div>
+          </div>
+          <div class="glass-card rounded-2xl p-4 border border-slate-800">
+            <div class="text-xs text-slate-400">活跃看片天数</div>
+            <div class="text-xl font-black font-['Orbitron'] text-emerald-400 mt-1">
+              {{ watchSummary.active_days_count || 0 }} <span class="text-xs font-normal text-slate-500">天</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 布局分栏：日历网格 + 常看榜 -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <!-- 日历网格 (占 2 栏) -->
+          <div class="lg:col-span-2 glass-card rounded-2xl p-5 border border-slate-800 space-y-4">
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-bold text-white flex items-center space-x-1.5">
+                <span>🗓️</span>
+                <span>足迹打卡日历</span>
+              </h3>
+              <span class="text-xs text-slate-500">点击日期可查看当日观影片单</span>
+            </div>
+
+            <!-- 星期表头 -->
+            <div class="grid grid-cols-7 gap-1 text-center text-xs font-bold text-slate-500">
+              <div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div><div>日</div>
+            </div>
+
+            <!-- 日历格子 -->
+            <div class="grid grid-cols-7 gap-1.5">
+              <div v-for="cell in calendarCells" :key="cell.date"
+                   @click="selectCalendarDate(cell)"
+                   :class="[
+                     cell.isCurrentMonth ? '' : 'opacity-20 pointer-events-none',
+                     cell.hasRecord ? 'bg-purple-950/40 border-brand-pink/50 hover:border-pink-400 cursor-pointer shadow-sm shadow-pink-500/10' : 'bg-slate-900/40 border-slate-800/60',
+                     selectedCalendarDay && selectedCalendarDay.date === cell.date ? 'ring-2 ring-pink-500' : ''
+                   ]"
+                   class="min-h-[64px] p-1.5 rounded-xl border flex flex-col justify-between transition">
+                <div class="flex items-center justify-between">
+                  <span class="text-[11px] font-mono" :class="cell.isToday ? 'text-pink-400 font-bold' : 'text-slate-400'">{{ cell.dayNumber }}</span>
+                  <span v-if="cell.hasRecord" class="w-1.5 h-1.5 rounded-full bg-pink-500"></span>
+                </div>
+                <div v-if="cell.hasRecord" class="text-right">
+                  <span class="text-[10px] font-mono text-purple-300 font-bold">{{ Math.round(cell.record.total_seconds / 60) }}m</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 当日观影片单抽屉 -->
+            <div v-if="selectedCalendarDay" class="p-3 bg-slate-900/80 rounded-xl border border-slate-800 space-y-2 mt-4">
+              <div class="flex items-center justify-between text-xs">
+                <span class="font-bold text-white">{{ selectedCalendarDay.date }} 观影明细 (共 {{ selectedCalendarDay.titles.length }} 部/集)</span>
+                <span class="text-purple-400 font-mono">{{ Math.floor(selectedCalendarDay.total_seconds / 60) }} 分钟</span>
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <span v-for="t in selectedCalendarDay.titles" :key="t"
+                      class="text-xs px-2 py-0.5 rounded-lg bg-slate-800 text-slate-300 border border-slate-700">
+                  {{ t }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 本月常看榜 TOP 5 (占 1 栏) -->
+          <div class="glass-card rounded-2xl p-5 border border-slate-800 space-y-4">
+            <h3 class="text-sm font-bold text-white flex items-center space-x-1.5">
+              <span>🏆</span>
+              <span>本月常看影片 TOP 5</span>
+            </h3>
+
+            <div v-if="!watchSummary.top_watched || watchSummary.top_watched.length === 0" class="py-12 text-center text-xs text-slate-500">
+              本月暂无观影数据，快去 Emby 播放一部你喜欢的影视吧！
+            </div>
+
+            <div v-else class="space-y-2.5">
+              <div v-for="(item, idx) in watchSummary.top_watched" :key="item.title"
+                   class="p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between">
+                <div class="flex items-center space-x-2.5 min-w-0">
+                  <div class="w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black font-mono"
+                       :class="idx === 0 ? 'bg-amber-500 text-black' : idx === 1 ? 'bg-slate-300 text-black' : idx === 2 ? 'bg-amber-700 text-white' : 'bg-slate-800 text-slate-400'">
+                    {{ idx + 1 }}
+                  </div>
+                  <span class="text-xs text-white font-bold truncate" :title="item.title">{{ item.title }}</span>
+                </div>
+                <span class="text-xs font-mono text-purple-400 font-medium flex-shrink-0">
+                  {{ Math.floor(item.seconds / 60) }}m
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ================= Tab 3: 我的投稿 & 任务 ================= -->
       <div v-if="currentTab === 'submissions'" class="space-y-6">
         <div class="flex items-center justify-between">
@@ -1527,6 +1684,23 @@
         const crowdfundPoints = ref(20)
         const isCrowdfunding = ref(false)
 
+        // 观影足迹与赛博日历状态
+        const nowD = new Date()
+        const currentYearMonthStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}`
+        const watchCalendarMonth = ref(currentYearMonthStr)
+        const watchSummary = ref({
+          year_month: currentYearMonthStr,
+          total_seconds: 0,
+          active_days_count: 0,
+          total_movies: 0,
+          total_episodes: 0,
+          days: [],
+          top_watched: [],
+          today_seconds: 0,
+          today_reward_claimed: false
+        })
+        const selectedCalendarDay = ref(null)
+
         const loginForm = ref({ username: '', password: '' })
         const searchQuery = ref('')
         const searchResults = ref([])
@@ -1561,6 +1735,7 @@
           const list = [
             { id: 'home', name: '首页大屏', icon: '🏠' },
             { id: 'wanted', name: '求片大厅', icon: '🎯' },
+            { id: 'calendar', name: '观影足迹', icon: '📅' },
             { id: 'dedup', name: '查重投稿', icon: '🔍' },
             { id: 'leaderboard', name: '英雄榜', icon: '🏆' },
             { id: 'submissions', name: '我的任务', icon: '📦' },
@@ -2021,6 +2196,81 @@
             alert('网络异常: ' + e.message)
           }
         }
+
+        // ============ 观影足迹与赛博日历 ============
+        const loadWatchCalendar = async () => {
+          if (!user.value) return
+          try {
+            const res = await fetch(`/api/watch/calendar?month=${watchCalendarMonth.value}`, { headers: getAuthHeaders() })
+            if (res.ok) {
+              watchSummary.value = await res.json()
+            }
+          } catch (e) {
+            console.error('加载观影足迹日历失败:', e)
+          }
+        }
+
+        const changeWatchMonth = (delta) => {
+          const [y, m] = watchCalendarMonth.value.split('-').map(Number)
+          const d = new Date(y, m - 1 + delta, 1)
+          watchCalendarMonth.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+          selectedCalendarDay.value = null
+          loadWatchCalendar()
+        }
+
+        const selectCalendarDate = (cell) => {
+          if (!cell.hasRecord) return
+          selectedCalendarDay.value = cell.record
+        }
+
+        const calendarCells = computed(() => {
+          const [year, month] = watchCalendarMonth.value.split('-').map(Number)
+          const firstDay = new Date(year, month - 1, 1)
+          const lastDay = new Date(year, month, 0)
+          const totalDays = lastDay.getDate()
+          
+          // 获取本月第一天是周几 (0:周日, 1:周一...) -> 转换成 1:周一, 7:周日
+          let startDayOfWeek = firstDay.getDay()
+          startDayOfWeek = startDayOfWeek === 0 ? 7 : startDayOfWeek
+
+          const recordsMap = {}
+          if (watchSummary.value && watchSummary.value.days) {
+            watchSummary.value.days.forEach(d => {
+              recordsMap[d.date] = d
+            })
+          }
+
+          const todayStr = new Date().toISOString().slice(0, 10)
+          const cells = []
+
+          // 前补空白天
+          for (let i = 1; i < startDayOfWeek; i++) {
+            cells.push({
+              date: `prev-${i}`,
+              dayNumber: '',
+              isCurrentMonth: false,
+              hasRecord: false,
+              isToday: false,
+              record: null
+            })
+          }
+
+          // 本月天数
+          for (let day = 1; day <= totalDays; day++) {
+            const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+            const rec = recordsMap[dateStr] || null
+            cells.push({
+              date: dateStr,
+              dayNumber: day,
+              isCurrentMonth: true,
+              hasRecord: !!rec,
+              isToday: dateStr === todayStr,
+              record: rec
+            })
+          }
+
+          return cells
+        })
 
         // ============ 求片与众筹悬赏大厅 ============
         const loadWantedList = async () => {
@@ -2488,10 +2738,12 @@
           loadLeaderboard()
           loadMissingBoard()
           loadWantedList()
+          loadWatchCalendar()
         })
 
         watch(currentTab, (tab) => {
           if (tab === 'wanted') loadWantedList()
+          if (tab === 'calendar') loadWatchCalendar()
           if (tab === 'leaderboard') loadLeaderboard()
           if (tab === 'dedup') loadMissingBoard()
           if (tab === 'submissions') loadMySubmissions()
@@ -2564,6 +2816,13 @@
           handleUnclaimWanted,
           handleCancelWanted,
           quickFillSubmitFromWanted,
+          watchCalendarMonth,
+          watchSummary,
+          selectedCalendarDay,
+          loadWatchCalendar,
+          changeWatchMonth,
+          selectCalendarDate,
+          calendarCells,
           leaderboardCategory,
           leaderboardTimespan,
           leaderboardItems,
