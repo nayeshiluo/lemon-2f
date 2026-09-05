@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database import get_db
 from backend.models.user import User
@@ -10,9 +11,12 @@ from backend.schemas import (
     TgBindRedeemRequest, TgBindStatusResponse,
 )
 from backend.security import create_access_token, get_password_hash, verify_password
-from backend.clients.emby import emby_client
+from backend.clients.emby import EmbyClient, emby_client
 from backend.auth import get_current_user
 from backend.config import settings
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=6, max_length=64)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -180,3 +184,43 @@ async def unbind_telegram(
         bound=False,
         message="已解除 Telegram 绑定。软妹币余额与历史流水均不受影响"
     )
+
+
+@router.get("/devices")
+async def list_user_devices(
+    current_user: User = Depends(get_current_user)
+):
+    """获取当前用户在 Emby 上的所有在线设备会话列表"""
+    emby = EmbyClient()
+    if not current_user.emby_user_id:
+        return []
+    return await emby.get_user_sessions(current_user.emby_user_id)
+
+
+@router.post("/devices/{session_id}/logout")
+async def logout_user_device(
+    session_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """远程下线指定的 Emby 播放设备"""
+    emby = EmbyClient()
+    success = await emby.logout_session(session_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="下线设备失败或设备已离线")
+    return {"success": True, "message": "已成功将该设备远程强制下线！"}
+
+
+@router.post("/reset-password")
+async def reset_password(
+    req: ResetPasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """修改当前账号登录密码与 Emby 播放密码"""
+    current_user.password_hash = get_password_hash(req.new_password)
+    if current_user.emby_user_id:
+        emby = EmbyClient()
+        await emby.reset_user_password(current_user.emby_user_id, req.new_password)
+    await db.commit()
+    return {"success": True, "message": "密码修改成功！新密码已同步生效。"}
+

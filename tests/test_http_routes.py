@@ -219,3 +219,19 @@ async def test_protected_routes_reject_anonymous():
         for path in ("/api/auth/me", "/api/submissions/my", "/api/shop/items"):
             r = await client.get(path)
             assert r.status_code in (401, 403), f"{path} 未鉴权却返回 {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_auth_devices_and_reset_password(client_and_user):
+    """验证：用户在线设备查询与修改密码契约"""
+    client, user = client_and_user
+    # 1. 查询设备
+    r_dev = await client.get("/api/auth/devices")
+    assert r_dev.status_code == 200
+    assert isinstance(r_dev.json(), list)
+
+    # 2. 修改密码
+    r_pw = await client.post("/api/auth/reset-password", json={"new_password": "new_secure_password_999"})
+    assert r_pw.status_code == 200
+    assert r_pw.json()["success"] is True
+

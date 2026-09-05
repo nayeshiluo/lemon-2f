@@ -187,6 +187,61 @@ class EmbyClient:
                     return True
             return False
 
+    async def get_user_sessions(self, emby_user_id: str) -> List[Dict[str, Any]]:
+        """获取指定 Emby 用户的当前在线设备会话列表"""
+        if not self.server_url or not self.api_key:
+            return []
+        url = f"{self.server_url}/emby/Sessions"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.get(url, headers=self._get_headers())
+                if res.status_code == 200:
+                    sessions = res.json()
+                    user_sessions = []
+                    for s in sessions:
+                        if s.get("UserId") == emby_user_id:
+                            user_sessions.append({
+                                "session_id": s.get("Id"),
+                                "device_name": s.get("DeviceName") or "未知设备",
+                                "client_name": s.get("Client") or "未知客户端",
+                                "app_version": s.get("ApplicationVersion") or "",
+                                "remote_ip": s.get("RemoteEndPoint") or "",
+                                "last_activity": s.get("LastActivityDate") or ""
+                            })
+                    return user_sessions
+                return []
+        except Exception as e:
+            logger.error(f"Emby get_user_sessions error: {e}")
+            return []
+
+    async def logout_session(self, session_id: str) -> bool:
+        """远程踢出指定 Emby 设备会话"""
+        if not self.server_url or not self.api_key:
+            return False
+        url = f"{self.server_url}/emby/Sessions/Logout"
+        params = {"sessionId": session_id}
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(url, params=params, headers=self._get_headers())
+                return res.status_code in (200, 204)
+        except Exception as e:
+            logger.error(f"Emby logout_session error: {e}")
+            return False
+
+    async def reset_user_password(self, emby_user_id: str, new_password: str) -> bool:
+        """重置指定 Emby 用户的播放密码"""
+        if not self.server_url or not self.api_key:
+            return False
+        url = f"{self.server_url}/emby/Users/{emby_user_id}/Password"
+        payload = {"NewPw": new_password, "ResetPassword": False}
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(url, json=payload, headers=self._get_headers())
+                return res.status_code in (200, 204)
+        except Exception as e:
+            logger.error(f"Emby reset_user_password error: {e}")
+            return False
+
     async def refresh_library(self) -> bool:
         """触发 Emby 媒体库全局扫描"""
         if not self.server_url or not self.api_key:

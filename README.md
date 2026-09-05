@@ -14,7 +14,7 @@
 [![Alembic](https://img.shields.io/badge/Migration-Alembic-7B1FA2.svg)](migrations/)
 [![Vue3](https://img.shields.io/badge/Frontend-Vue3%20%2B%20TailwindCSS-4FC08D.svg?logo=vuedotjs&logoColor=white)](frontend/)
 [![Emby](https://img.shields.io/badge/Integration-Emby%20Server-52B043.svg)](https://emby.media)
-[![Tests](https://img.shields.io/badge/Tests-150%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-180%20passed-brightgreen.svg)](tests/)
 
 ---
 
@@ -76,6 +76,28 @@
 ### 10. 🤖 原生 Telegram Bot & 💻 赛博霓虹大屏
 * Bot 支持 `/start`、`/find <片名>`、`/upload <磁力>`、`/sign`、`/points`、`/shop` 与可折叠富文本卡片；
 * Web 面板基于 Vue 3 + TailwindCSS 赛博暗黑粉紫风，全量对接真实 REST API。
+
+### 11. 🎯 众筹求片与时效独占悬赏大厅 (Crowdfunded Bounty)
+* **多人众筹跟投**：用户发起求片后，全站想看的其他用户均可追加软妹币 🪙 加码众筹，资金池与热度滚雪球累加；
+* **24 小时时效独占认领**：压制组/贡献者一键认领锁定保护期，杜绝撞车；认领超时未交自动惰性释放回公海；
+* **入库结算与原路退款**：入库合格认领人独揽全部众筹总池；若撤销求片则全体支持者资金原路全额平账退款。
+
+### 12. 📝 外挂字幕独立质检与洗名轨道 (Subtitle Track)
+* **降低普通用户贡献门槛**：支持独立上传 `.srt`、`.ass`、`.ssa`、`.vtt` 外挂中文字幕；
+* **Fail-Closed 深度文本质检**：智能识别 UTF/GBK 编码，严格校验时间轴特征，过滤假文件与垃圾；
+* **Emby 规范命名**：自动重命名为 `{片名}.zh-CN.default.srt` 归档投递，即刻发放配置软妹币奖励。
+
+### 13. 📅 Emby 观影足迹日历与每日看片打卡 (Watch Calendar)
+* **月度日历看板**：实时汇总用户在 Emby 的观影记录，统计看片部数、看剧集数、观影总时长与本月常看 TOP 5；
+* **活跃度代币激励**：每日看片累计满 30 分钟，系统自动派发每日观影打卡软妹币（+5 🪙），提升日常粘性。
+
+### 14. 🧧 赛博福利社：口令红包广场与幸运大轮盘 (Social Economy)
+* **红包广场**：支持塞入拼手气、普通均分与暗号口令红包，悲观锁行级防护，二倍均值算法公平瓜分；
+* **幸运大轮盘**：消耗 10 软妹币转动轮盘，抽取 Emby VIP 卡密、专线卡、软妹币回血与赛博徽章，卡密自动发货。
+
+### 15. 📱 Emby 在线播放设备与会话安全管理 (Device & Session Center)
+* 实时查看当前 Emby 账号在线设备会话（设备名、客户端、版本、IP 与最后活跃时间）；
+* 支持一键远程强制踢设备下线，并支持网页端一键同步修改系统与 Emby 播放密码。
 
 ---
 
