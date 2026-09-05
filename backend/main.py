@@ -15,7 +15,7 @@ from backend.services.pipeline_service import SubmissionPipelineService
 from backend.redis_client import redis_manager
 from backend.clients.tmdb import tmdb_client
 from backend.bot import create_bot_app
-from backend.routes.v1 import auth, tasks, submissions, points, wanted, subtitles, watch, shop, admin, webhooks
+from backend.routes.v1 import auth, tasks, submissions, points, wanted, subtitles, watch, social, shop, admin, webhooks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -140,6 +140,7 @@ app.include_router(points.router, prefix="/api/v1")
 app.include_router(wanted.router, prefix="/api/v1")
 app.include_router(subtitles.router, prefix="/api/v1")
 app.include_router(watch.router, prefix="/api/v1")
+app.include_router(social.router, prefix="/api/v1")
 app.include_router(shop.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(webhooks.router, prefix="/api/v1")
@@ -152,6 +153,7 @@ app.include_router(points.router, prefix="/api")
 app.include_router(wanted.router, prefix="/api")
 app.include_router(subtitles.router, prefix="/api")
 app.include_router(watch.router, prefix="/api")
+app.include_router(social.router, prefix="/api")
 app.include_router(shop.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")

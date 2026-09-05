@@ -787,6 +787,143 @@
         </div>
       </div>
 
+      <!-- ================= Tab: 赛博福利 (红包广场与幸运轮盘) ================= -->
+      <div v-if="currentTab === 'social'" class="space-y-6">
+        <!-- 头部控制栏与子页面切换 -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+              <span>🎁</span>
+              <span>二楼赛博福利社</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">红包广场派福气、赛博大轮盘抽神装，全站软妹币生态微循环！</p>
+          </div>
+          <div class="flex items-center space-x-2 bg-slate-900/80 p-1 rounded-xl border border-slate-800 text-xs">
+            <button @click="socialSubTab = 'redpacket'"
+                    :class="socialSubTab === 'redpacket' ? 'bg-pink-600 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                    class="px-3 py-1.5 rounded-lg transition">
+              🧧 红包广场
+            </button>
+            <button @click="socialSubTab = 'wheel'"
+                    :class="socialSubTab === 'wheel' ? 'bg-purple-600 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                    class="px-3 py-1.5 rounded-lg transition">
+              🎡 幸运大轮盘
+            </button>
+          </div>
+        </div>
+
+        <!-- 子栏目 1: 红包广场 -->
+        <div v-if="socialSubTab === 'redpacket'" class="space-y-6">
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-slate-400">进行中可抢红包 (共 {{ activeRedPackets.length }} 个)</span>
+            <div class="flex items-center space-x-2">
+              <button @click="loadActiveRedPackets" class="text-xs text-purple-400 hover:text-purple-300 font-medium">刷新列表</button>
+              <button @click="showSendPacketModal = true"
+                      class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-lg shadow-pink-500/20 transition flex items-center space-x-1">
+                <span>🧧</span>
+                <span>我要发红包</span>
+              </button>
+            </div>
+          </div>
+
+          <div v-if="activeRedPackets.length === 0" class="glass-card rounded-2xl p-12 text-center space-y-3">
+            <div class="text-4xl">🧧</div>
+            <p class="text-sm text-slate-400">当前红包广场静悄悄，快来塞一个红包引爆全场吧！</p>
+            <button @click="showSendPacketModal = true" class="bg-gradient-to-r from-pink-600 to-purple-600 text-white text-xs font-bold px-4 py-2 rounded-xl">塞红包</button>
+          </div>
+
+          <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div v-for="packet in activeRedPackets" :key="packet.id"
+                 class="glass-card rounded-2xl p-5 border border-slate-800 hover:border-brand-pink/50 transition flex flex-col justify-between space-y-4">
+              <div>
+                <div class="flex items-start justify-between gap-2">
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center space-x-1.5">
+                      <span class="text-xs px-1.5 py-0.5 rounded bg-pink-950/60 text-pink-400 border border-pink-500/30 font-medium">
+                        {{ packet.packet_type === 'password' ? '🔐 口令' : packet.packet_type === 'random' ? '🎲 手气' : '⚖️ 均分' }}
+                      </span>
+                      <span class="text-xs text-slate-400 font-medium truncate">{{ packet.sender_name }}</span>
+                    </div>
+                    <h3 class="text-base font-bold text-white mt-1.5 truncate">{{ packet.title }}</h3>
+                  </div>
+                  <div class="text-right flex-shrink-0">
+                    <div class="text-base font-black font-['Orbitron'] text-pink-400">
+                      🪙 {{ packet.total_points }}
+                    </div>
+                    <div class="text-[10px] text-slate-500 mt-0.5">剩余 {{ packet.remaining_count }}/{{ packet.total_count }} 份</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="pt-3 border-t border-slate-800/80 flex items-center justify-between">
+                <span class="text-[11px] text-slate-500 font-mono">{{ formatDate(packet.created_at) }}</span>
+                <button @click="openClaimPacketModal(packet)"
+                        class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-xs font-bold px-4 py-1.5 rounded-xl shadow transition">
+                  👉 抢红包
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 子栏目 2: 幸运大轮盘 -->
+        <div v-if="socialSubTab === 'wheel'" class="space-y-6">
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- 轮盘交互主区 -->
+            <div class="lg:col-span-2 glass-card rounded-2xl p-6 border border-slate-800 flex flex-col items-center justify-center space-y-6 text-center">
+              <div>
+                <h3 class="text-lg font-black text-white font-['Orbitron'] neon-text-purple">CYBER LUCKY WHEEL</h3>
+                <p class="text-xs text-slate-400 mt-1">每次消耗 <strong class="text-pink-400 font-bold">10 🪙 软妹币</strong>，抽取 Emby VIP 卡密与最高 100 软妹币大奖！</p>
+              </div>
+
+              <!-- 轮盘奖品盘预览九宫格 -->
+              <div class="grid grid-cols-3 gap-2.5 max-w-md w-full">
+                <div v-for="(p, idx) in wheelPrizes" :key="p.name"
+                     :class="[
+                       lastSpunIndex === idx ? 'ring-2 ring-pink-500 bg-pink-950/60 scale-105' : 'bg-slate-900/80 border-slate-800',
+                       p.type === 'points' && p.points >= 50 ? 'border-amber-500/40' : 'border-slate-800'
+                     ]"
+                     class="p-3 rounded-xl border text-center transition flex flex-col items-center justify-center min-h-[76px]">
+                  <div class="text-xs font-bold text-white">{{ p.name }}</div>
+                  <div class="text-[10px] text-purple-400 font-mono mt-1">{{ p.weight }}% 几率</div>
+                </div>
+              </div>
+
+              <!-- 抽奖大按钮 -->
+              <div>
+                <button @click="handleSpinWheel" :disabled="isSpinning"
+                        class="bg-gradient-to-r from-pink-600 via-purple-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white font-black text-sm px-8 py-3.5 rounded-2xl shadow-xl shadow-purple-500/25 transition transform active:scale-95 disabled:opacity-50 flex items-center space-x-2">
+                  <span class="text-lg">🎡</span>
+                  <span>{{ isSpinning ? '光速转动中...' : '转动轮盘 (10 🪙/次)' }}</span>
+                </button>
+                <p v-if="user" class="text-xs text-slate-400 mt-2 font-mono">当前软妹币余额: 🪙 {{ user.balance }}</p>
+              </div>
+            </div>
+
+            <!-- 中奖广播墙 -->
+            <div class="glass-card rounded-2xl p-5 border border-slate-800 space-y-4">
+              <h3 class="text-sm font-bold text-white flex items-center space-x-1.5">
+                <span>📢</span>
+                <span>全站中奖广播台</span>
+              </h3>
+              <div v-if="recentWheelWinners.length === 0" class="py-12 text-center text-xs text-slate-500">
+                暂无中奖记录，快去当第一个欧皇！
+              </div>
+              <div v-else class="space-y-2">
+                <div v-for="w in recentWheelWinners" :key="w.id"
+                     class="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between text-xs">
+                  <div class="min-w-0">
+                    <span class="font-bold text-purple-300 mr-1.5">{{ w.username }}</span>
+                    <span class="text-slate-400">抽中了</span>
+                    <span class="text-pink-400 font-bold ml-1">{{ w.prize_name }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ================= Tab 3: 我的投稿 & 任务 ================= -->
       <div v-if="currentTab === 'submissions'" class="space-y-6">
         <div class="flex items-center justify-between">
@@ -1316,6 +1453,93 @@
       </div>
     </div>
 
+    <!-- 发红包模态框 -->
+    <div v-if="showSendPacketModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div class="glass-card max-w-md w-full p-6 rounded-2xl border border-brand-pink/50 shadow-2xl space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <span class="text-xl">🧧</span>
+            <h3 class="text-lg font-bold text-white">塞入二楼福利红包</h3>
+          </div>
+          <button @click="showSendPacketModal = false" class="text-slate-400 hover:text-white">✕</button>
+        </div>
+
+        <div class="space-y-3 text-xs">
+          <div>
+            <label class="block font-semibold text-slate-300 mb-1">红包类型</label>
+            <div class="grid grid-cols-3 gap-2">
+              <button type="button" @click="sendPacketForm.packet_type = 'random'"
+                      :class="sendPacketForm.packet_type === 'random' ? 'bg-pink-600 text-white font-bold' : 'bg-slate-900 text-slate-400 border border-slate-700'"
+                      class="py-2 rounded-xl transition">🎲 拼手气</button>
+              <button type="button" @click="sendPacketForm.packet_type = 'equal'"
+                      :class="sendPacketForm.packet_type === 'equal' ? 'bg-purple-600 text-white font-bold' : 'bg-slate-900 text-slate-400 border border-slate-700'"
+                      class="py-2 rounded-xl transition">⚖️ 普通均分</button>
+              <button type="button" @click="sendPacketForm.packet_type = 'password'"
+                      :class="sendPacketForm.packet_type === 'password' ? 'bg-amber-600 text-white font-bold' : 'bg-slate-900 text-slate-400 border border-slate-700'"
+                      class="py-2 rounded-xl transition">🔐 暗号口令</button>
+            </div>
+          </div>
+
+          <div v-if="sendPacketForm.packet_type === 'password'">
+            <label class="block font-semibold text-slate-300 mb-1">红包口令 (领红包者需输入)</label>
+            <input v-model="sendPacketForm.passcode" type="text" placeholder="例如: 二楼有请赛博修仙" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none">
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-300 mb-1">红包祝福语 / 标题</label>
+            <input v-model="sendPacketForm.title" type="text" placeholder="例如: 二楼发红包喽！" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none">
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">总金额 (软妹币 🪙)</label>
+              <input v-model.number="sendPacketForm.total_points" type="number" min="5" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-pink-400 font-bold outline-none">
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">总份数 (个)</label>
+              <input v-model.number="sendPacketForm.total_count" type="number" min="1" max="100" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white outline-none">
+            </div>
+          </div>
+
+          <p v-if="user" class="text-[11px] text-purple-300">
+            当前可用余额: 🪙 {{ user.balance }} 软妹币 (扣减后存入全站红包广场)
+          </p>
+        </div>
+
+        <div class="flex gap-2 pt-2">
+          <button @click="showSendPacketModal = false" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold py-2.5 rounded-xl">取消</button>
+          <button @click="submitSendPacket" :disabled="isSendingPacket" class="flex-1 bg-gradient-to-r from-pink-600 to-purple-600 text-white text-sm font-bold py-2.5 rounded-xl disabled:opacity-50">
+            {{ isSendingPacket ? '处理中...' : '塞币发出' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 抢红包弹窗 -->
+    <div v-if="showClaimPacketModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div class="glass-card max-w-sm w-full p-6 rounded-2xl border border-brand-pink/50 shadow-2xl space-y-4 text-center">
+        <div class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-pink-600 to-purple-600 mx-auto flex items-center justify-center text-3xl shadow-lg shadow-pink-500/30">
+          🧧
+        </div>
+        <div v-if="claimingPacket">
+          <h3 class="text-lg font-bold text-white">{{ claimingPacket.title }}</h3>
+          <p class="text-xs text-slate-400 mt-1">来自 <span class="text-pink-400 font-bold">{{ claimingPacket.sender_name }}</span> 的红包</p>
+        </div>
+
+        <div v-if="claimingPacket && claimingPacket.is_password" class="text-left space-y-1">
+          <label class="block text-xs font-semibold text-slate-300">请输入开门暗号口令</label>
+          <input v-model="claimPasscode" type="text" placeholder="输入口令抢红包" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white text-center font-bold outline-none">
+        </div>
+
+        <div class="flex gap-2 pt-2">
+          <button @click="showClaimPacketModal = false" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold py-2.5 rounded-xl">暂不领</button>
+          <button @click="submitClaimPacket" :disabled="isClaimingPacket" class="flex-1 bg-gradient-to-r from-pink-600 to-purple-600 text-white text-sm font-bold py-2.5 rounded-xl disabled:opacity-50">
+            {{ isClaimingPacket ? '开抢中...' : '開！拆红包' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 登录模态框 -->
     <div v-if="showLoginModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div class="glass-card max-w-md w-full p-6 rounded-2xl border border-brand-pink/50 shadow-2xl space-y-5">
@@ -1701,6 +1925,36 @@
         })
         const selectedCalendarDay = ref(null)
 
+        // 赛博福利社 (红包与轮盘) 状态
+        const socialSubTab = ref('redpacket')
+        const activeRedPackets = ref([])
+        const showSendPacketModal = ref(false)
+        const sendPacketForm = ref({
+          packet_type: 'random',
+          passcode: '',
+          title: '二楼发红包喽！',
+          total_points: 50,
+          total_count: 5
+        })
+        const isSendingPacket = ref(false)
+        const showClaimPacketModal = ref(false)
+        const claimingPacket = ref(null)
+        const claimPasscode = ref('')
+        const isClaimingPacket = ref(false)
+
+        const isSpinning = ref(false)
+        const lastSpunIndex = ref(null)
+        const recentWheelWinners = ref([])
+        const wheelPrizes = ref([
+          { name: "🪙 100 软妹币大奖", type: "points", points: 100, weight: 2 },
+          { name: "🪙 25 软妹币回血", type: "points", points: 25, weight: 13 },
+          { name: "🪙 5 软妹币回血", type: "points", points: 5, weight: 30 },
+          { name: "🎟️ Emby VIP 3天卡", type: "code", points: 0, weight: 5 },
+          { name: "⚡ 专线加速卡密", type: "code", points: 0, weight: 5 },
+          { name: "👾 赛博幸运星徽章", type: "badge", points: 0, weight: 10 },
+          { name: "💨 谢谢参与", type: "none", points: 0, weight: 35 },
+        ])
+
         const loginForm = ref({ username: '', password: '' })
         const searchQuery = ref('')
         const searchResults = ref([])
@@ -1736,6 +1990,7 @@
             { id: 'home', name: '首页大屏', icon: '🏠' },
             { id: 'wanted', name: '求片大厅', icon: '🎯' },
             { id: 'calendar', name: '观影足迹', icon: '📅' },
+            { id: 'social', name: '赛博福利', icon: '🎁' },
             { id: 'dedup', name: '查重投稿', icon: '🔍' },
             { id: 'leaderboard', name: '英雄榜', icon: '🏆' },
             { id: 'submissions', name: '我的任务', icon: '📦' },
@@ -2194,6 +2449,148 @@
             }
           } catch (e) {
             alert('网络异常: ' + e.message)
+          }
+        }
+
+        // ============ 赛博福利社 (红包与轮盘) ============
+        const loadActiveRedPackets = async () => {
+          try {
+            const res = await fetch('/api/social/redpacket/active?limit=30', { headers: getAuthHeaders() })
+            if (res.ok) {
+              activeRedPackets.value = await res.json()
+            }
+          } catch (e) {
+            console.error('加载可抢红包列表失败:', e)
+          }
+        }
+
+        const submitSendPacket = async () => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          const f = sendPacketForm.value
+          if (f.total_points < f.total_count) {
+            alert(`红包总金额 (${f.total_points} 🪙) 不能少于份数 (${f.total_count} 份)`)
+            return
+          }
+          if (user.value.balance < f.total_points) {
+            alert(`软妹币余额不足 (当前 ${user.value.balance} 🪙)，无法塞入 ${f.total_points} 🪙 红包`)
+            return
+          }
+          if (f.packet_type === 'password' && !f.passcode.trim()) {
+            alert('口令红包必须输入有效暗号口令')
+            return
+          }
+
+          isSendingPacket.value = true
+          try {
+            const res = await fetch('/api/social/redpacket/send', {
+              method: 'POST',
+              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                packet_type: f.packet_type,
+                passcode: f.passcode.trim(),
+                title: f.title.trim() || '二楼发红包喽！',
+                total_points: Number(f.total_points),
+                total_count: Number(f.total_count)
+              })
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert(`🧧 ${data.message}`)
+              showSendPacketModal.value = false
+              fetchUserProfile()
+              loadActiveRedPackets()
+            } else {
+              alert(data.detail || '发红包失败')
+            }
+          } catch (e) {
+            alert('网络异常: ' + e.message)
+          } finally {
+            isSendingPacket.value = false
+          }
+        }
+
+        const openClaimPacketModal = (packet) => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          claimingPacket.value = packet
+          claimPasscode.value = ''
+          showClaimPacketModal.value = true
+        }
+
+        const submitClaimPacket = async () => {
+          if (!claimingPacket.value) return
+          isClaimingPacket.value = true
+          try {
+            const res = await fetch(`/api/social/redpacket/${claimingPacket.value.id}/claim`, {
+              method: 'POST',
+              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({ passcode: claimPasscode.value.trim() })
+            })
+            const data = await res.json()
+            if (res.ok) {
+              alert(`🎉 恭喜！${data.message} 已自动存入您的软妹币账户！`)
+              showClaimPacketModal.value = false
+              fetchUserProfile()
+              loadActiveRedPackets()
+            } else {
+              alert(data.detail || '领取失败')
+            }
+          } catch (e) {
+            alert('网络异常: ' + e.message)
+          } finally {
+            isClaimingPacket.value = false
+          }
+        }
+
+        const loadWheelWinners = async () => {
+          try {
+            const res = await fetch('/api/social/wheel/recent', { headers: getAuthHeaders() })
+            if (res.ok) {
+              recentWheelWinners.value = await res.json()
+            }
+          } catch (e) {
+            console.error('加载中奖广播失败:', e)
+          }
+        }
+
+        const handleSpinWheel = async () => {
+          if (!user.value) {
+            showLoginModal.value = true
+            return
+          }
+          if (user.value.balance < 10) {
+            alert(`软妹币余额不足 (当前 ${user.value.balance} 🪙)，每次转动需要 10 🪙`)
+            return
+          }
+          isSpinning.value = true
+          lastSpunIndex.value = null
+          try {
+            const res = await fetch('/api/social/wheel/spin', {
+              method: 'POST',
+              headers: getAuthHeaders()
+            })
+            const data = await res.json()
+            if (res.ok) {
+              lastSpunIndex.value = data.prize_index
+              let msg = `🎡 轮盘停留在【${data.prize_name}】！\n\n${data.message}`
+              if (data.prize_code) {
+                msg += `\n\n🔑 专属卡密: ${data.prize_code} (请妥善保存)`
+              }
+              alert(msg)
+              fetchUserProfile()
+              loadWheelWinners()
+            } else {
+              alert(data.detail || '抽奖失败')
+            }
+          } catch (e) {
+            alert('网络异常: ' + e.message)
+          } finally {
+            isSpinning.value = false
           }
         }
 
@@ -2739,11 +3136,17 @@
           loadMissingBoard()
           loadWantedList()
           loadWatchCalendar()
+          loadActiveRedPackets()
+          loadWheelWinners()
         })
 
         watch(currentTab, (tab) => {
           if (tab === 'wanted') loadWantedList()
           if (tab === 'calendar') loadWatchCalendar()
+          if (tab === 'social') {
+            loadActiveRedPackets()
+            loadWheelWinners()
+          }
           if (tab === 'leaderboard') loadLeaderboard()
           if (tab === 'dedup') loadMissingBoard()
           if (tab === 'submissions') loadMySubmissions()
@@ -2823,6 +3226,25 @@
           changeWatchMonth,
           selectCalendarDate,
           calendarCells,
+          socialSubTab,
+          activeRedPackets,
+          showSendPacketModal,
+          sendPacketForm,
+          isSendingPacket,
+          showClaimPacketModal,
+          claimingPacket,
+          claimPasscode,
+          isClaimingPacket,
+          isSpinning,
+          lastSpunIndex,
+          recentWheelWinners,
+          wheelPrizes,
+          loadActiveRedPackets,
+          submitSendPacket,
+          openClaimPacketModal,
+          submitClaimPacket,
+          loadWheelWinners,
+          handleSpinWheel,
           leaderboardCategory,
           leaderboardTimespan,
           leaderboardItems,
