@@ -16,6 +16,7 @@ from backend.security import create_access_token, get_password_hash, verify_pass
 from backend.clients.emby import EmbyClient, emby_client
 from backend.auth import get_current_user
 from backend.services.tg_auth_service import TgAuthService
+from backend.rate_limit import login_guard, LoginBlocked
 from backend.config import settings
 
 class ResetPasswordRequest(BaseModel):
@@ -24,10 +25,22 @@ class ResetPasswordRequest(BaseModel):
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 @router.post("/login", response_model=Token)
-async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
-    """支持 Emby 原生账号密码穿透登录，或本地用户名密码登录"""
+async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db), request: Request = None):
+    """支持 Emby 原生账号密码穿透登录，或本地用户名密码登录（限速防暴破）"""
     username = req.username.strip()
     password = req.password
+
+    # 登录限速：以 用户名|客户端IP 为维度，失败累计超阈值锁定
+    client_ip = request.client.host if request and request.client else "unknown"
+    guard_key = f"{username}|{client_ip}"
+    try:
+        login_guard.check(guard_key)
+    except LoginBlocked as e:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(e),
+            headers={"Retry-After": str(e.retry_after_seconds)},
+        )
 
     user_repo = UserRepository(db)
     points_service = PointsService(db)
@@ -37,6 +50,7 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
     user = await user_repo.get_by_username(username)
 
     if emby_auth:
+        login_guard.on_success(guard_key)
         emby_id = emby_auth.get("emby_user_id")
         is_admin = emby_auth.get("is_administrator", False)
         target_role = "admin" if is_admin else "user"
@@ -78,6 +92,7 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
 
     # 2. 本地密码校验 (开发/管理员)
     if user and user.password_hash and verify_password(password, user.password_hash):
+        login_guard.on_success(guard_key)
         token = create_access_token(subject=user.id, role=user.role)
         return Token(
             access_token=token,
@@ -89,6 +104,7 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
 
     # 3. 初始体验默认用户 (开发模式)
     if not user and password == "123456" and settings.APP_ENV != "production":
+        login_guard.on_success(guard_key)
         user = User(
             username=username,
             password_hash=get_password_hash(password),
@@ -115,6 +131,8 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
             is_whitelisted=user.is_whitelisted
         )
 
+    # 4. 校验失败：记录一次失败（累计达阈值触发锁定）
+    login_guard.record_failure(guard_key)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="账号密码校验失败"

@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     DEAD_TORRENT_TIMEOUT_MINUTES: int = 15
     RESERVATION_TTL_MINUTES: int = 120
 
+    # 直传上传边界（防滥用：单文件大小 / 会话累计额度 / 磁盘水位）
+    UPLOAD_MAX_FILE_SIZE_MB: int = 10240      # 单文件上限 10GB（覆盖 4K 原盘常见体积）
+    UPLOAD_MAX_SESSION_MB: int = 20480        # 每用户 24h 窗口累计上限 20GB
+    UPLOAD_SESSION_WINDOW_HOURS: int = 24     # 会话累计窗口：24 小时
+
     # 流水线调度：轮询兜底间隔（秒）。事件驱动为主，轮询只作为兜底安全网。
     PIPELINE_POLL_INTERVAL_SECONDS: int = 15
     # 空闲时（无任何活跃投稿）的兜底间隔，可放宽以降低数据库空转查询

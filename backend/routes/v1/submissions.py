@@ -1,6 +1,7 @@
 import os
 import uuid
 import tempfile
+import shutil
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,9 +11,54 @@ from backend.auth import get_current_user
 from backend.schemas import SubmissionCreate, SubmissionResponse, PublicSubmissionResponse
 from backend.repositories.submission_repo import SubmissionRepository
 from backend.services.submission_service import SubmissionService
+from backend.rate_limit import BytesWindowLimiter
 from backend.config import settings
 
 router = APIRouter(prefix="/submissions", tags=["Submissions"])
+
+# starlette 新版本将 413 常量更名为 CONTENT_TOO_LARGE，兼容旧版常量
+try:
+    HTTP_413 = status.HTTP_413_CONTENT_TOO_LARGE
+except AttributeError:  # pragma: no cover
+    HTTP_413 = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+
+# 直传上传会话额度守卫（每用户 24h 滑动窗口累计，防恶意塞盘）
+_upload_limiter: Optional[BytesWindowLimiter] = None
+
+
+def get_upload_limiter() -> BytesWindowLimiter:
+    """惰性单例：额度/窗口从 settings 读取，测试可重置重建"""
+    global _upload_limiter
+    if _upload_limiter is None:
+        _upload_limiter = BytesWindowLimiter(
+            max_bytes=settings.UPLOAD_MAX_SESSION_MB * 1024 * 1024,
+            window_seconds=settings.UPLOAD_SESSION_WINDOW_HOURS * 3600,
+        )
+    return _upload_limiter
+
+
+def _check_disk_watermark(upload_dir: str) -> None:
+    """
+    上传前磁盘水位检查：剩余空间低于 MIN_DISK_FREE_PERCENT 一律拒绝（HTTP 507）。
+    与流水线熔断口径一致 —— 宁可拒绝上传，也不允许把媒体盘写满。
+    """
+    if not os.path.isdir(upload_dir):
+        return
+    try:
+        total, _used, free = shutil.disk_usage(upload_dir)
+        if total <= 0:
+            return
+        free_percent = free / total * 100
+        if free_percent < settings.MIN_DISK_FREE_PERCENT:
+            raise HTTPException(
+                status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+                detail=f"服务器磁盘可用空间不足（剩余 {free_percent:.1f}%，低于熔断阈值 {settings.MIN_DISK_FREE_PERCENT:.1f}%），请稍后再试"
+            )
+    except OSError:
+        # 探测失败不阻塞上传（与看板口径一致），后端流水线仍有熔断兜底
+        return
+    except HTTPException:
+        raise
 
 # 分页参数统一约束：page 从 1 起、page_size 有上限。
 # 缺少约束时 page=0 会算出 OFFSET -20 —— PostgreSQL 直接报错
@@ -86,17 +132,44 @@ async def upload_direct_file(
         upload_dir = os.path.join(tempfile.gettempdir(), "lemon_2f_uploads")
         os.makedirs(upload_dir, exist_ok=True)
 
+    # 边界①：上传前磁盘水位检查（剩余空间低于熔断线 → 507，拒绝写盘）
+    _check_disk_watermark(upload_dir)
+
     safe_filename = f"{uuid.uuid4().hex[:12]}_{os.path.basename(file.filename or 'video.mkv')}"
     saved_path = os.path.join(upload_dir, safe_filename)
 
+    # 边界②③：单文件大小上限 + 用户 24h 会话累计额度
+    max_file_bytes = settings.UPLOAD_MAX_FILE_SIZE_MB * 1024 * 1024
+    limiter = get_upload_limiter()
+    total_written = 0
     try:
         with open(saved_path, "wb") as f:
-            while chunk := await file.read(1024 * 1024 * 4): # 4MB chunk
+            while chunk := await file.read(1024 * 1024 * 4):  # 4MB chunk
+                total_written += len(chunk)
+                if total_written > max_file_bytes:
+                    raise HTTPException(
+                        status_code=HTTP_413,
+                        detail=f"文件超过单文件上限（{settings.UPLOAD_MAX_FILE_SIZE_MB}MB），已中止并清理"
+                    )
+                # 会话额度按块预扣：额度不足立即中止，防止无限写盘
+                allowed, _rem = limiter.allow(str(current_user.id), len(chunk))
+                if not allowed:
+                    raise HTTPException(
+                        status_code=HTTP_413,
+                        detail="今日直传累计已超过配额上限，请改用磁力/网盘/挂载通道或联系管理员"
+                    )
                 f.write(chunk)
+    except HTTPException:
+        if os.path.exists(saved_path):
+            os.remove(saved_path)
+        raise
     except Exception as e:
         if os.path.exists(saved_path):
             os.remove(saved_path)
         raise HTTPException(status_code=500, detail=f"视频上传写入失败: {e}")
+    if total_written == 0:
+        os.remove(saved_path) if os.path.exists(saved_path) else None
+        raise HTTPException(status_code=400, detail="上传文件为空")
 
     service = SubmissionService(db)
     try:
@@ -114,8 +187,10 @@ async def upload_direct_file(
         loaded_sub = await service.sub_repo.get_by_id(sub.id)
         return loaded_sub or sub
     except ValueError as e:
+        # 资源冲突/入库失败：清理已落盘文件并退还已预扣的会话额度
         if os.path.exists(saved_path):
             os.remove(saved_path)
+        limiter.refund(str(current_user.id), total_written)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 @router.get("/my")
