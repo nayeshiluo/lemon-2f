@@ -1,7 +1,8 @@
 import os
 import shutil
+import logging
 from typing import List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 
@@ -16,7 +17,8 @@ from backend.repositories.user_repo import UserRepository
 from backend.services.points_service import PointsService
 from backend.services.submission_service import SubmissionService
 from backend.services.task_service import TaskService
-from backend.schemas import AdminDeleteSubmissionRequest, PointsRulesUpdateRequest
+from backend.services.tg_auth_service import TgAuthService
+from backend.schemas import AdminDeleteSubmissionRequest, PointsRulesUpdateRequest, TgSyncGroupRequest
 from backend.config import settings
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -257,3 +259,66 @@ async def admin_sync_emby_series(
     task_service = TaskService(db)
     result = await task_service.sync_emby_series(limit=limit)
     return result
+
+
+logger = logging.getLogger("lemon_2f.admin")
+
+_TG_MEMBER_STATUSES = ("member", "creator", "administrator")
+
+
+@router.post("/tg-sync-group")
+async def admin_tg_sync_group(
+    req: TgSyncGroupRequest,
+    request: Request,
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    管理员：按 TG 群（Emby 群）批量开通二楼账号并签发个人 Token。
+
+    - 不传 user_ids：同步该群全部管理员（普通 bot 无法枚举全部群成员，
+      普通成员请私聊 Bot /start 自助开通，bot 会用 get_chat_member 校验其在群里）；
+    - 传 user_ids：仅对"确实在该群里"的成员建档，非成员自动跳过。
+
+    返回每个新开通账号的 Token 明文（仅此一次，落库只有哈希）。
+    """
+    from backend.bot import get_bot_app
+    bot_app = get_bot_app()
+    if not bot_app:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Telegram Bot 未运行，无法同步群成员")
+
+    service = TgAuthService(db)
+    client_ip = request.client.host if request.client else None
+
+    members: List[Dict[str, Any]] = []
+    skipped_not_member: List[int] = []
+
+    try:
+        if req.user_ids:
+            # 显式清单：逐个验证是否真的在群里
+            for uid in req.user_ids:
+                try:
+                    member = await bot_app.bot.get_chat_member(chat_id=req.chat_id, user_id=uid)
+                    if member.status in _TG_MEMBER_STATUSES and member.user:
+                        members.append({"tg_user_id": uid, "tg_username": member.user.username})
+                    else:
+                        skipped_not_member.append(uid)
+                except Exception as e:
+                    logger.info(f"get_chat_member({uid}) in {req.chat_id} failed: {e}")
+                    skipped_not_member.append(uid)
+        else:
+            # 默认：同步群管理员
+            for m in await bot_app.bot.get_chat_administrators(chat_id=req.chat_id):
+                if m.user:
+                    members.append({"tg_user_id": m.user.id, "tg_username": m.user.username})
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"获取群成员失败：{e}")
+
+    report = await service.provision_many(members, actor=admin_user, ip_address=client_ip)
+    return {
+        "success": True,
+        "chat_id": req.chat_id,
+        "queried_members": len(members),
+        "not_in_group_skipped": skipped_not_member,
+        **report,
+    }

@@ -18,6 +18,11 @@ class User(Base):
     tg_user_id = Column(BigInteger, unique=True, index=True, nullable=True)
     tg_username = Column(String(64), nullable=True)
     
+    # EMOS 式个人长期登录 Token（面板免密登录主凭据）
+    # 只存 SHA-256 哈希，绝不落库明文；每次重新签发即滚动，旧 Token 立即失效
+    personal_token_hash = Column(String(64), nullable=True)
+    personal_token_created_at = Column(DateTime(timezone=True), nullable=True)
+    
     # 权限矩阵: owner (最高), admin (管理员), user (普通众包用户)
     role = Column(String(32), default="user", nullable=False)
     is_whitelisted = Column(Boolean, default=False, nullable=False)

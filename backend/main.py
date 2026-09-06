@@ -14,7 +14,7 @@ from backend.database import AsyncSessionLocal
 from backend.services.pipeline_service import SubmissionPipelineService
 from backend.redis_client import redis_manager
 from backend.clients.tmdb import tmdb_client
-from backend.bot import create_bot_app
+from backend.bot import create_bot_app, set_bot_app
 from backend.routes.v1 import auth, tasks, submissions, points, wanted, subtitles, watch, social, shop, admin, webhooks
 
 logging.basicConfig(
@@ -93,6 +93,7 @@ async def lifespan(app: FastAPI):
     
     # 3. 启动 Telegram Bot 服务 (若已配置 Token)
     bot_app = create_bot_app()
+    set_bot_app(bot_app)
     if bot_app:
         try:
             await bot_app.initialize()

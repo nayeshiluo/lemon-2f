@@ -138,7 +138,7 @@
           <template v-else>
             <button @click="showLoginModal = true"
                     class="bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-sm font-semibold px-4 py-1.5 rounded-lg shadow-lg shadow-pink-600/30 transition">
-              Emby 原生登录
+              登录二楼
             </button>
           </template>
         </div>
@@ -1599,7 +1599,21 @@
           <button @click="showLoginModal = false" class="text-slate-400 hover:text-white">✕</button>
         </div>
 
-        <div class="space-y-3">
+        <!-- 登录方式 Tab -->
+        <div class="grid grid-cols-3 gap-1.5 bg-slate-900/80 p-1.5 rounded-xl border border-slate-800 text-xs">
+          <button type="button" @click="loginTab = 'password'"
+                  :class="loginTab === 'password' ? 'bg-pink-600 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                  class="py-1.5 px-2 rounded-lg transition text-center">🔑 账号密码</button>
+          <button type="button" @click="loginTab = 'token'"
+                  :class="loginTab === 'token' ? 'bg-purple-600 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                  class="py-1.5 px-2 rounded-lg transition text-center">🎟️ Token 速登</button>
+          <button type="button" @click="loginTab = 'tg'"
+                  :class="loginTab === 'tg' ? 'bg-cyan-600 text-white font-bold' : 'text-slate-400 hover:text-white'"
+                  class="py-1.5 px-2 rounded-lg transition text-center">🐤 TG 验证码</button>
+        </div>
+
+        <!-- Tab 1: 账号密码（Emby 原生 / 本地） -->
+        <div v-if="loginTab === 'password'" class="space-y-3">
           <div>
             <label class="block text-xs font-semibold text-slate-300 mb-1">Emby 或系统用户名</label>
             <input v-model="loginForm.username" type="text" placeholder="输入 Emby 用户名" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-pink-500">
@@ -1610,9 +1624,31 @@
           </div>
         </div>
 
+        <!-- Tab 2: Token 速登（EMOS 式个人 Token） -->
+        <div v-if="loginTab === 'token'" class="space-y-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">个人登录 Token</label>
+            <input v-model="tokenLoginForm.token" @keyup.enter="handleTokenLogin" type="text" placeholder="例如: 7_9f2c..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-purple-500">
+          </div>
+          <p class="text-[11px] text-slate-400 leading-relaxed">💡 私聊二楼 Telegram Bot 发送 <span class="text-purple-400 font-mono">/token</span> 即可获取/重置您的个人 Token，粘贴上方即登录，无需账号密码。每次获取旧 Token 自动失效。</p>
+        </div>
+
+        <!-- Tab 3: TG 验证码登录 -->
+        <div v-if="loginTab === 'tg'" class="space-y-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">Telegram 标识（数字 ID 或 @用户名）</label>
+            <input v-model="tgLoginForm.identifier" type="text" placeholder="例如: 123456789 或 @username" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">一次性验证码</label>
+            <input v-model="tgLoginForm.code" @keyup.enter="handleTgLogin" type="text" placeholder="例如: 7K9Q2M4X" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white font-mono uppercase text-center tracking-widest focus:outline-none focus:border-cyan-500">
+          </div>
+          <p class="text-[11px] text-slate-400 leading-relaxed">💡 私聊二楼 Telegram Bot 发送 <span class="text-cyan-400 font-mono">/login</span> 获取 8 位一次性验证码（5 分钟有效，单次使用即毁），连同您的 TG 标识一起提交即登录。</p>
+        </div>
+
         <div class="flex gap-2">
           <button @click="showLoginModal = false" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold py-2.5 rounded-xl">取消</button>
-          <button @click="handleLogin" :disabled="isLoggingIn" class="flex-1 bg-gradient-to-r from-pink-600 to-purple-600 text-white text-sm font-bold py-2.5 rounded-xl disabled:opacity-50">
+          <button @click="handleTabLogin" :disabled="isLoggingIn" class="flex-1 bg-gradient-to-r from-pink-600 to-purple-600 text-white text-sm font-bold py-2.5 rounded-xl disabled:opacity-50">
             {{ isLoggingIn ? '登录中...' : '立即登录' }}
           </button>
         </div>
@@ -2002,6 +2038,9 @@
         ])
 
         const loginForm = ref({ username: '', password: '' })
+        const loginTab = ref('password')
+        const tokenLoginForm = ref({ token: '' })
+        const tgLoginForm = ref({ identifier: '', code: '' })
         const searchQuery = ref('')
         const searchResults = ref([])
         const searchError = ref('')
@@ -2093,6 +2132,71 @@
               alert(`欢迎回来，${data.username}！当前拥有 ${data.balance} 软妹币。`)
             } else {
               alert(data.detail || '登录失败')
+            }
+          } catch (e) {
+            alert('网络请求异常: ' + e.message)
+          } finally {
+            isLoggingIn.value = false
+          }
+        }
+
+        const handleTabLogin = async () => {
+          if (loginTab.value === 'token') return handleTokenLogin()
+          if (loginTab.value === 'tg') return handleTgLogin()
+          return handleLogin()
+        }
+
+        const handleTokenLogin = async () => {
+          if (!tokenLoginForm.value.token || tokenLoginForm.value.token.length < 8) {
+            alert('请粘贴您的个人登录 Token（私聊 Bot 发送 /token 获取）')
+            return
+          }
+          isLoggingIn.value = true
+          try {
+            const res = await fetch('/api/auth/token-login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: tokenLoginForm.value.token.trim() })
+            })
+            const data = await res.json()
+            if (res.ok) {
+              localStorage.setItem('lemon_token', data.access_token)
+              await fetchUserProfile()
+              showLoginModal.value = false
+              alert(`欢迎回来，${data.username}！当前拥有 ${data.balance} 软妹币。`)
+            } else {
+              alert(data.detail || 'Token 登录失败')
+            }
+          } catch (e) {
+            alert('网络请求异常: ' + e.message)
+          } finally {
+            isLoggingIn.value = false
+          }
+        }
+
+        const handleTgLogin = async () => {
+          if (!tgLoginForm.value.identifier || !tgLoginForm.value.code) {
+            alert('请输入 Telegram 标识与验证码（私聊 Bot 发送 /login 获取）')
+            return
+          }
+          isLoggingIn.value = true
+          try {
+            const res = await fetch('/api/auth/tg-login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                identifier: tgLoginForm.value.identifier.trim(),
+                code: tgLoginForm.value.code.trim().toUpperCase()
+              })
+            })
+            const data = await res.json()
+            if (res.ok) {
+              localStorage.setItem('lemon_token', data.access_token)
+              await fetchUserProfile()
+              showLoginModal.value = false
+              alert(`欢迎回来，${data.username}！当前拥有 ${data.balance} 软妹币。`)
+            } else {
+              alert(data.detail || 'TG 登录失败')
             }
           } catch (e) {
             alert('网络请求异常: ' + e.message)
@@ -3277,6 +3381,9 @@
           isSubmitting,
           isExchanging,
           loginForm,
+          loginTab,
+          tokenLoginForm,
+          tgLoginForm,
           searchQuery,
           searchResults,
           searchError,
@@ -3392,6 +3499,9 @@
           handleAdminDeleteSubmission,
           loadAdminData,
           handleLogin,
+          handleTabLogin,
+          handleTokenLogin,
+          handleTgLogin,
           logout,
           handleSignIn,
           handleSearchMedia,

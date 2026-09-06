@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     # Telegram Bot
     TG_BOT_TOKEN: Optional[str] = Field(default=None)
     TG_ADMIN_IDS: List[int] = Field(default_factory=list)
+    # 最高权限所有者 TG ID（建档时自动授予 owner 角色）
+    TG_OWNER_ID: int = 0
+    # 允许"群成员自助开通二楼账号"的 TG 群 ID 白名单（Emby 群）
+    TG_ALLOWED_GROUP_IDS: List[int] = Field(default_factory=list)
     
     model_config = SettingsConfigDict(
         env_file=".env",

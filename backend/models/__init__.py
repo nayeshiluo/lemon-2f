@@ -9,6 +9,7 @@ from backend.models.social import RedPacket, RedPacketClaim, LuckyWheelRecord
 from backend.models.shop import ShopItem, ShopOrder
 from backend.models.audit import AuditLog, SystemSetting
 from backend.models.tg_bind import TgBindCode
+from backend.models.tg_login_code import TgLoginCode
 
 __all__ = [
     "User",
@@ -31,5 +32,6 @@ __all__ = [
     "ShopOrder",
     "AuditLog",
     "SystemSetting",
-    "TgBindCode"
+    "TgBindCode",
+    "TgLoginCode"
 ]

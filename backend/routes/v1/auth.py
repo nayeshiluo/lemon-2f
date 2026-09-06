@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+import logging
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database import get_db
@@ -9,10 +10,12 @@ from backend.services.tg_bind_service import TgBindService
 from backend.schemas import (
     EmbyLoginRequest, Token, UserProfile, ApiResponse,
     TgBindRedeemRequest, TgBindStatusResponse,
+    TokenLoginRequest, TgLoginRequest,
 )
 from backend.security import create_access_token, get_password_hash, verify_password
 from backend.clients.emby import EmbyClient, emby_client
 from backend.auth import get_current_user
+from backend.services.tg_auth_service import TgAuthService
 from backend.config import settings
 
 class ResetPasswordRequest(BaseModel):
@@ -116,6 +119,83 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db)):
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="账号密码校验失败"
     )
+
+
+def _token_response(user: User) -> Token:
+    """统一会话签发出口：登录成功后用它换取 JWT 会话"""
+    token = create_access_token(subject=user.id, role=user.role)
+    return Token(
+        access_token=token,
+        role=user.role,
+        username=user.username,
+        balance=user.balance,
+        is_whitelisted=user.is_whitelisted
+    )
+
+
+@router.post("/token-login", response_model=Token)
+async def token_login(
+    req: TokenLoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    EMOS 式个人 Token 免密登录。
+
+    Token 由 Telegram Bot 私聊 /token 获取（形如 `7_9f2c...`），
+    每次获取即滚动 —— 旧 Token 立即失效。全程无需 Emby 账号密码。
+    """
+    service = TgAuthService(db)
+    client_ip = request.client.host if request.client else None
+    try:
+        user = await service.login_with_token(req.token, ip_address=client_ip)
+    except ValueError as e:
+        # 触发登录限速
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token 无效或已被重置，请在 Telegram Bot 中重新发送 /token"
+        )
+
+    logger = logging.getLogger("lemon_2f.auth")
+    logger.info(f"Token login success: user #{user.id} ({user.username})")
+    return _token_response(user)
+
+
+@router.post("/tg-login", response_model=Token)
+async def tg_login(
+    req: TgLoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Telegram 验证码免密登录。
+
+    面板输入 TG 标识（数字 ID 或 @用户名）+ Bot 私聊 /login 获取的一次性验证码，
+    校验通过即换取会话 —— 全程无需 Emby 账号密码。
+    """
+    service = TgAuthService(db)
+    client_ip = request.client.host if request.client else None
+
+    try:
+        user, err = await service.resolve_tg_user(req.identifier)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    if user is None or user.tg_user_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=err or "该 Telegram 账号尚未开通二楼账号，请先私聊 Bot 发送 /start")
+
+    try:
+        user = await service.verify_login_code(user.tg_user_id, req.code, ip_address=client_ip)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="验证码校验失败，请确认后重试")
+
+    return _token_response(user)
 
 @router.get("/me", response_model=UserProfile)
 async def get_me(current_user: User = Depends(get_current_user)):

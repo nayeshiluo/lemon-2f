@@ -47,4 +47,4 @@ async def test_bot_commands_unbound_guard(monkeypatch):
 
     # 验证全部被拦截且给出了绑定指引
     for reply in update.message.replies:
-        assert "您还没有绑定二楼账号" in reply["text"]
+        assert "您还没有二楼账号" in reply["text"]

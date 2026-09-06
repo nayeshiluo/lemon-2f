@@ -29,6 +29,22 @@ class EmbyLoginRequest(BaseModel):
     username: str
     password: str
 
+# --- Telegram 免密登录（EMOS 式个人 Token / TG 验证码）---
+class TokenLoginRequest(BaseModel):
+    """个人长期登录 Token（Bot /token 获取，粘贴即登录）"""
+    token: str = Field(min_length=8, max_length=256, description="个人长期登录 Token")
+
+class TgLoginRequest(BaseModel):
+    """TG 验证码登录：Telegram 标识（数字 ID 或 @用户名）+ Bot /login 一次性码"""
+    identifier: str = Field(min_length=2, max_length=64, description="Telegram 数字 ID 或 @用户名")
+    code: str = Field(min_length=8, max_length=16, description="Bot /login 获取的一次性登录码")
+
+class TgSyncGroupRequest(BaseModel):
+    """管理员：按 TG 群批量开通二楼账号"""
+    # 注意：TG 超级群 ID 为负数（-100xxxxxxxxxx），不能用 gt=0 约束
+    chat_id: int = Field(description="TG 群 ID（Emby 群，超级群为 -100 开头负数）")
+    user_ids: Optional[List[int]] = Field(default=None, description="可选：显式指定的 TG 成员 ID 清单（不传则同步群管理员）")
+
 # --- Telegram 账号绑定 ---
 class TgBindRedeemRequest(BaseModel):
     """Web 端提交 TG 绑定码"""

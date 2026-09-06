@@ -32,6 +32,7 @@ from backend.qb_client import qb_client
 from backend.services.points_service import PointsService
 from backend.services.submission_service import SubmissionService
 from backend.services.tg_bind_service import TgBindService
+from backend.services.tg_auth_service import TgAuthService
 from backend.repositories.submission_repo import SubmissionRepository
 from backend.repositories.wanted_repo import WantedRepository
 from backend.repositories.watch_repo import WatchRepository
@@ -40,12 +41,15 @@ from backend.repositories.social_repo import SocialRepository
 logger = logging.getLogger("lemon_2f.bot")
 
 UNBOUND_HINT = (
-    "🔗 **您还没有绑定二楼账号**\n\n"
-    "本 Bot 是 Emby 账号的一个接入端，不再单独建号发币。\n"
-    "请按以下两步完成绑定：\n\n"
+    "🔗 **您还没有二楼账号**\n\n"
+    "两种开通方式，任选其一：\n\n"
+    "**方式 ①：免密自动开通（推荐）**\n"
+    "如果您是 Emby 群成员，直接发送 `/start`，系统核验您在群里后\n"
+    "将**自动开通二楼账号并发放个人登录 Token**，全程无需账号密码。\n\n"
+    "**方式 ②：绑定 Emby 账号**\n"
     "1️⃣ 在此发送 `/link` 获取一次性绑定码\n"
     "2️⃣ 打开二楼 Web 端 → 用 **Emby 账号密码登录** → 个人中心提交绑定码\n\n"
-    "绑定完成后即可在 Bot 中签到、投稿、求片、抢红包、查询软妹币。"
+    "开通后发送 `/token` 查看个人登录 Token，发送 `/login` 获取面板登录验证码。"
 )
 
 
@@ -84,7 +88,7 @@ async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         existing_user = bound.scalar_one_or_none()
         if existing_user:
             await update.message.reply_text(
-                f"✅ **您已成功绑定二楼账号**\n\n"
+                f"✅ **您已绑定二楼账号**\n\n"
                 f"• Emby 用户名：`{existing_user.username}`\n"
                 f"• 角色权限：`{existing_user.role.upper()}`\n"
                 f"• 软妹币余额：`{existing_user.balance}` 🪙\n\n"
@@ -97,7 +101,6 @@ async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = await service.issue_code(
             tg_user_id=tg_user.id,
             tg_username=tg_user.username,
-            tg_first_name=tg_user.first_name,
         )
         await session.commit()
 
@@ -116,14 +119,132 @@ async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+async def find_allowed_group(bot, tg_user_id: int) -> Optional[int]:
+    """在 TG_ALLOWED_GROUP_IDS 白名单群中查找该用户真实所在的群（用于自助建档）"""
+    for group_id in settings.TG_ALLOWED_GROUP_IDS or []:
+        try:
+            member = await bot.get_chat_member(chat_id=group_id, user_id=tg_user_id)
+            if member.status in ("member", "creator", "administrator"):
+                return group_id
+        except Exception:
+            continue
+    return None
+
+
+async def cmd_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/token 查看（滚动签发）个人长期登录 Token"""
+    tg_user = update.effective_user
+    if not update.message or not tg_user:
+        return
+
+    user = await require_bound_user(update)
+    if not user:
+        return
+
+    async with AsyncSessionLocal() as session:
+        db_user = await session.get(User, user.id)
+        if not db_user:
+            return
+        service = TgAuthService(session)
+        raw_token = await service.issue_personal_token(db_user)
+        await session.commit()
+        await session.refresh(db_user)
+
+    msg = (
+        f"🎟️ **您的二楼面板登录 Token**\n\n"
+        f"```\n{raw_token}\n```\n"
+        f"（点击上方代码块可直接复制）\n\n"
+        f"📌 **使用方法**：打开二楼面板 → 登录弹窗选择【Token 速登】→ 粘贴该 Token 即登录。\n\n"
+        f"⚠️ **重要安全说明**：\n"
+        f"• 每次发送 `/token` 都会**生成全新 Token，旧 Token 立即失效**；\n"
+        f"• 此 Token 等同您的登录密码，请勿转发给任何人；\n"
+        f"• 怀疑泄露时，再发送一次 `/token` 即可完成重置。"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/login 签发一次性面板登录验证码（配合 TG ID/@用户名 使用）"""
+    tg_user = update.effective_user
+    if not update.message or not tg_user:
+        return
+
+    user = await require_bound_user(update)
+    if not user:
+        return
+
+    async with AsyncSessionLocal() as session:
+        db_user = await session.get(User, user.id)
+        if not db_user:
+            return
+        service = TgAuthService(session)
+        try:
+            code, expires_at = await service.issue_login_code(
+                tg_user_id=tg_user.id,
+                tg_username=tg_user.username,
+            )
+        except ValueError as e:
+            await session.rollback()
+            await update.message.reply_text(f"⚠️ {e}", parse_mode="Markdown")
+            return
+
+    msg = (
+        f"🔐 **二楼面板一次性登录验证码**\n\n"
+        f"```\n{code}\n```\n"
+        f"⏳ **有效期**：5 分钟 · 单次使用即毁\n"
+        f"（输错累计 5 次将作废，需重新 /login）\n\n"
+        f"📌 **使用方法**：打开二楼面板 → 登录弹窗选择【TG 验证码】→ 输入下方标识 + 粘贴该验证码：\n\n"
+        f"• 标识 ①：您的 Telegram 数字 ID  `{tg_user.id}`\n"
+        f"• 标识 ②：您的 @用户名" + (f"  `@{tg_user.username}`" if tg_user.username else "（未设置）") + "\n\n"
+        f"⚠️ 请勿将此验证码转发给任何人！"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/start 指令"""
+    """/start 指令（群成员免密自动开通 / 已开通用户欢迎页）"""
     tg_user = update.effective_user
     if not update.message or not tg_user:
         return
 
     user = await get_bound_user(tg_user.id)
     if not user:
+        # 免密通道：白名单群成员自动开通二楼账号（bot 核验其真实在群里）
+        if settings.TG_ALLOWED_GROUP_IDS:
+            allowed_chat = await find_allowed_group(context.bot, tg_user.id)
+            if allowed_chat:
+                async with AsyncSessionLocal() as session:
+                    service = TgAuthService(session)
+                    try:
+                        user, raw_token, created = await service.provision_tg_user(
+                            tg_user_id=tg_user.id,
+                            tg_username=tg_user.username,
+                        )
+                    except Exception as e:
+                        logger.error(f"Auto-provision failed for tg#{tg_user.id}: {e}", exc_info=True)
+                        await update.message.reply_text(
+                            "😢 自动开通二楼账号失败，请稍后重试或联系管理员。",
+                            parse_mode="Markdown",
+                        )
+                        return
+                if user:
+                    opened_text = (
+                        f"🎉 **二楼账号开通成功！**\n\n"
+                        f"• 用户身份：`{user.username}` ({user.role.upper()})\n"
+                        f"• 软妹币：`{user.balance}` 🪙（首批赠送）\n\n"
+                    )
+                    if raw_token:
+                        opened_text += (
+                            f"🎟️ **您的个人登录 Token**\n```\n{raw_token}\n```\n"
+                            f"（可复制；每次 /token 都会滚动生成新 Token，旧 Token 立即失效）\n\n"
+                        )
+                    opened_text += (
+                        f"📌 **面板登录方式**：登录弹窗选【Token 速登】粘贴上方 Token；\n"
+                        f"或发送 `/login` 获取一次性验证码走【TG 验证码】通道，均无需账号密码。"
+                    )
+                    await update.message.reply_text(opened_text, parse_mode="Markdown")
+                    return
+
         await update.message.reply_text(
             "✨ **欢迎来到【二楼有请】影视众包管理中心** ✨\n\n" + UNBOUND_HINT,
             parse_mode="Markdown"
@@ -784,6 +905,20 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer(f"🎉 恭喜抢得 {got_points} 软妹币！", show_alert=True)
 
 
+_bot_app: Optional[Application] = None
+
+
+def set_bot_app(app: Optional[Application]):
+    """登记运行中的 Bot 实例（main.py lifespan 中调用，供 admin 路由复用）"""
+    global _bot_app
+    _bot_app = app
+
+
+def get_bot_app() -> Optional[Application]:
+    """获取运行中的 Bot 实例；未启动返回 None"""
+    return _bot_app
+
+
 def create_bot_app() -> Optional[Application]:
     """构建 Telegram Bot 应用实例"""
     token = settings.TG_BOT_TOKEN
@@ -794,6 +929,8 @@ def create_bot_app() -> Optional[Application]:
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("link", cmd_link))
+    app.add_handler(CommandHandler("token", cmd_token))
+    app.add_handler(CommandHandler("login", cmd_login))
     app.add_handler(CommandHandler("sign", cmd_sign))
     app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("upload", cmd_upload))
