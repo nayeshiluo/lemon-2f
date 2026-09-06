@@ -12,6 +12,7 @@ from backend.models.social import RedPacket, RedPacketClaim, LuckyWheelRecord
 from backend.auth import get_current_user
 from backend.repositories.social_repo import SocialRepository
 from backend.services.points_service import PointsService
+from backend.rate_limit import RateLimit
 
 router = APIRouter(prefix="/social", tags=["Social Economy & Games"])
 
@@ -44,12 +45,18 @@ WHEEL_PRIZES = [
 ]
 WHEEL_COST = 10 # 每次抽奖消耗 10 软妹币
 
+# 高频经济接口限流（按 用户id 计，进程内存活；多 worker 各自计数，阈值取单进程偏紧值）
+wheel_rate = RateLimit(5, 60)          # 轮盘：5 次/分钟（防脚本高速抽卡密）
+claim_rate = RateLimit(10, 60)         # 抢红包：10 次/分钟（DB 唯一性兜底，此处防轰炸）
+send_packet_rate = RateLimit(3, 300)   # 发红包：3 次/5 分钟（防批量塞包扰群）
+
 
 @router.post("/redpacket/send")
 async def send_red_packet(
     req: SendRedPacketRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _rl: None = send_packet_rate,
 ):
     """
     发红包：
@@ -116,7 +123,8 @@ async def claim_red_packet(
     packet_id: int,
     req: ClaimRedPacketRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _rl: None = claim_rate,
 ):
     """
     抢红包：
@@ -235,7 +243,8 @@ async def list_active_red_packets(
 @router.post("/wheel/spin")
 async def spin_lucky_wheel(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _rl: None = wheel_rate,
 ):
     """
     转动赛博幸运轮盘：

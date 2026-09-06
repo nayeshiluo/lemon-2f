@@ -10,9 +10,13 @@ from backend.auth import get_current_user
 from backend.schemas import PointsLedgerResponse, SignInResponse
 from backend.repositories.ledger_repo import LedgerRepository
 from backend.services.points_service import PointsService
+from backend.rate_limit import RateLimit
 from backend.config import settings
 
 router = APIRouter(prefix="/points", tags=["Points"])
+
+# 签到：15 次/分钟（DB 唯一约束兜底不重复发币，此处防高频轰炸打库）
+sign_in_rate = RateLimit(15, 60)
 
 @router.get("/ledger")
 async def get_ledger(
@@ -38,7 +42,8 @@ async def get_ledger(
 @router.post("/sign-in", response_model=SignInResponse)
 async def daily_sign_in(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _rl: None = sign_in_rate,
 ):
     """每日签到领取软妹币 (数据库 UNIQUE 约束防重 + 连签加成)"""
     today = date.today()

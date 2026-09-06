@@ -11,10 +11,14 @@ from backend.auth import get_current_user
 from backend.schemas import SubmissionCreate, SubmissionResponse, PublicSubmissionResponse
 from backend.repositories.submission_repo import SubmissionRepository
 from backend.services.submission_service import SubmissionService
-from backend.rate_limit import BytesWindowLimiter
+from backend.rate_limit import BytesWindowLimiter, RateLimit
 from backend.config import settings
 
 router = APIRouter(prefix="/submissions", tags=["Submissions"])
+
+# 投稿创建：10 次/分钟；直传上传：5 次/分钟（配合字节额度双保险）
+submit_rate = RateLimit(10, 60)
+upload_rate = RateLimit(5, 60)
 
 # starlette 新版本将 413 常量更名为 CONTENT_TOO_LARGE，兼容旧版常量
 try:
@@ -71,7 +75,8 @@ PageSizeQuery = Query(default=20, ge=1, le=100, description="每页条数 (1~100
 async def create_submission(
     req: SubmissionCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _rl: None = submit_rate,
 ):
     """提交资源开启入库流水线 (支持磁力链接、本地挂载目录、网盘分享链接多接口分流)"""
     service = SubmissionService(db)
@@ -108,7 +113,8 @@ async def upload_direct_file(
     title: Optional[str] = Form(default=None),
     year: Optional[int] = Form(default=None),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _rl: None = upload_rate,
 ):
     """
     直接上传本地视频文件入库：

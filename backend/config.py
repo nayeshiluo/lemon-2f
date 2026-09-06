@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     UPLOAD_MAX_SESSION_MB: int = 20480        # 每用户 24h 窗口累计上限 20GB
     UPLOAD_SESSION_WINDOW_HOURS: int = 24     # 会话累计窗口：24 小时
 
+    # 并发预占配额（防抢坑囤积：单用户同时处于下载/预占态的最大任务数）
+    MAX_ACTIVE_SUBMISSIONS_PER_USER: int = 3
+
     # 流水线调度：轮询兜底间隔（秒）。事件驱动为主，轮询只作为兜底安全网。
     PIPELINE_POLL_INTERVAL_SECONDS: int = 15
     # 空闲时（无任何活跃投稿）的兜底间隔，可放宽以降低数据库空转查询

@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
@@ -54,6 +54,22 @@ class SubmissionService:
     ) -> Submission:
         import hashlib
         canonical_media_type = self.task_service.get_canonical_tmdb_type(media_type)
+
+        # 0. 并发预占配额：单用户同时活跃任务数上限（防抢坑囤积）
+        #    活跃 = pending/reserved/downloading/inspecting/delivering/waiting_emby
+        active_statuses_for_quota = [
+            "pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby"
+        ]
+        quota_stmt = select(func.count(Submission.id)).where(
+            Submission.user_id == user_id,
+            Submission.status.in_(active_statuses_for_quota),
+        )
+        active_count = (await self.db.execute(quota_stmt)).scalar() or 0
+        quota = settings.MAX_ACTIVE_SUBMISSIONS_PER_USER
+        if active_count >= quota:
+            raise ValueError(
+                f"您同时进行的任务已达上限（{quota} 个），请等待其中部分下载/入库完成或被释放后再提交"
+            )
 
         # 1. 提取或生成唯一物理标识 Hash
         if source_type == "magnet":

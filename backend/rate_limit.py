@@ -9,10 +9,91 @@
 
 当前用途：
   - LoginRateGuard：账号密码登录限速（5 次失败 → 锁 10 分钟）；
-  - BytesWindowLimiter：直传上传的会话累计字节额度。
+  - BytesWindowLimiter：直传上传的会话累计字节额度；
+  - RateLimiter / RateLimit：通用端点频率限制（高危经济接口）。
 """
 import time
 from typing import Dict, List, Optional, Tuple
+
+from fastapi import Depends, HTTPException, Request, status
+
+
+class RateLimiter:
+    """通用滑动窗口频率守卫（按 key 计数）"""
+
+    def __init__(self, max_hits: int, window_seconds: float):
+        self.max_hits = max_hits
+        self.window_seconds = window_seconds
+        self._hits: Dict[str, List[float]] = {}
+
+    def allow(self, key: str) -> Tuple[bool, int]:
+        """
+        尝试放行一次。返回 (是否放行, 若拒绝则 建议 Retry-After 秒数)。
+        放行时立即计数；拒绝时正好是窗口第 max_hits 次之后。
+        """
+        now = time.time()
+        hits = [t for t in self._hits.get(key, []) if t > now - self.window_seconds]
+        if len(hits) >= self.max_hits:
+            return False, int(self.window_seconds - (now - hits[0])) + 1
+        hits.append(now)
+        self._hits[key] = hits
+        return True, 0
+
+    def reset(self) -> None:
+        self._hits.clear()
+
+
+def _request_key(request: Request) -> str:
+    """
+    限流键：已登录用户按 uid（多设备/共享出口 IP 互不挤兑），
+    匿名请求按客户端 IP（兜底）。从 JWT 提取 sub，不查库。
+    """
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        payload = decode_jwt_sub(auth[7:].strip())
+        if payload:
+            return f"u:{payload}"
+    ip = request.client.host if request.client else "unknown"
+    return f"ip:{ip}"
+
+
+def decode_jwt_sub(token: str) -> Optional[str]:
+    """轻量解码 JWT 的 sub（不透传非法 token 的错误）"""
+    try:
+        from backend.security import decode_access_token
+        payload = decode_access_token(token)
+        if payload and payload.get("sub"):
+            return str(payload["sub"])
+    except Exception:
+        pass
+    return None
+
+
+def RateLimit(max_hits: int, window_seconds: float):
+    """
+    FastAPI 依赖工厂：给高频端点加频率限制。
+
+    用法：
+        submit_rate = RateLimit(10, 60)          # 10 次 / 60 秒
+        @router.post("/")
+        async def handler(..., _rl: None = submit_rate):
+            ...
+
+    返回 429 + Retry-After 头。进程内存活，多 worker 各自计数。
+    """
+    limiter = RateLimiter(max_hits, window_seconds)
+
+    async def dependency(request: Request):
+        ok, retry = limiter.allow(_request_key(request))
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="操作过于频繁，请稍后再试",
+                headers={"Retry-After": str(retry)},
+            )
+
+    dependency.limiter = limiter  # 测试可访问/调参
+    return Depends(dependency)
 
 
 class LoginRateGuard:
