@@ -20,8 +20,11 @@
 
 ## 🌟 核心特性 (Features)
 
-### 1. 🔐 Emby 原生无缝穿透鉴权
-用户直接使用 Emby 原生账号密码登录 Web 面板或 Telegram Bot，自动识别管理员与普通用户并同步建档；支持 Telegram 账号绑定码互认（`/api/auth/tg-bind/*`）。
+### 1. 🔐 双通道无缝鉴权：Emby 原生穿透 + TG 免密登录
+* **账号密码通道**：Emby 原生账号密码穿透登录 Web 面板或 Telegram Bot，自动识别管理员与普通用户并同步建档；
+* **TG 免密通道（EMOS 式个人 Token）**：Emby 群成员私聊 Bot `/start` 自动开通二楼账号（白名单群校验，陌生人无法开户），凭个人长期 Token（`/token` 获取，形如 `7_9f2c...`，只存 SHA-256 哈希、每次签发即滚动）或一次性验证码（`/login` 获取，8 位 / 5 分钟有效 / 单次消费）直接登录面板，全程无需账号密码——`POST /api/auth/token-login`、`POST /api/auth/tg-login`；
+* 传统绑定仍可用：TG `/link` 绑定码与 Emby 账号互认（`/api/auth/tg-bind/*`）；
+* 管理员可按 TG 群批量建档并发 Token（`POST /api/admin/tg-sync-group`，Bot 未运行 Fail-Closed 503）。
 
 ### 2. 🔍 TMDB 权威识别与 Emby 穿透查重
 * 提交时穿透 TMDB API 锁定权威 `tmdb_id`，与 Emby `ProviderIds.Tmdb` 精准对账；
@@ -98,6 +101,13 @@
 ### 15. 📱 Emby 在线播放设备与会话安全管理 (Device & Session Center)
 * 实时查看当前 Emby 账号在线设备会话（设备名、客户端、版本、IP 与最后活跃时间）；
 * 支持一键远程强制踢设备下线，并支持网页端一键同步修改系统与 Emby 播放密码。
+
+### 16. 🛡️ 安全边界加固（防滥用防线）
+* **登录防暴破**：账号密码登录 5 次失败锁 10 分钟（`用户名|IP` 维度，成功即清零，429 + Retry-After）；
+* **直传上传三重防线**：落盘前磁盘水位熔断（低于 `MIN_DISK_FREE_PERCENT` → 507）、单文件大小上限（`UPLOAD_MAX_FILE_SIZE_MB` 默认 10GB → 413 并立即清理已写分块）、每用户 24h 会话累计额度（`UPLOAD_MAX_SESSION_MB` 默认 20GB → 413，入库冲突自动退还额度）；
+* **高频经济接口限流**：轮盘 5 次/分、抢红包 10 次/分、发红包 3 次/5分、签到 15 次/分、投稿 10 次/分、直传 5 次/分——按用户 ID 计（共享出口 IP 不挤兑），进程内存活零依赖；
+* **并发预占配额**：单用户同时活跃任务上限 `MAX_ACTIVE_SUBMISSIONS_PER_USER`（默认 3），防抢坑囤积；已完成任务不计入；
+* 既有的越权隔离、目录穿越白名单、并发双花幂等、Webhook Fail-Closed、公共流脱敏保持全绿。
 
 ---
 
@@ -183,7 +193,7 @@ PYTHONPATH=. APP_ENV=testing python3 tests/sim_drill.py
 
 ## 🗺️ 后续路线图 (Roadmap)
 
-* **P0**：PostgreSQL + Redis 真生产部署验证、API 限流与并发预占配额、Emby Webhook 实时联动
+* **P0**：PostgreSQL + Redis 真生产部署验证、Emby Webhook 实时联动（API 限流与并发预占配额 ✅ 已完成）
 * **P1**：AList 统一网盘真实转存引擎（打通夸克/移动/光鸭离线闭环）、PT 一键发种联动
 * **P2**：Overseerr 同款分季集数矩阵色块盘、观众报错工单与抓虫赏金
 
