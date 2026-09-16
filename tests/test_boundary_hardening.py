@@ -257,3 +257,21 @@ async def test_api_upload_rejects_non_video_extension(env):
     )
     assert r.status_code == 400
     assert "不支持的文件格式" in r.json()["detail"]
+@pytest.mark.asyncio
+async def test_local_mount_rejects_symlink_escape(db_session, monkeypatch, tmp_path):
+    """An allowed-directory symlink must not escape to an arbitrary host path."""
+    from backend.services.submission_service import SubmissionService
+    from backend.config import settings
+
+    allowed = tmp_path / "downloads"
+    allowed.mkdir()
+    escape = allowed / "escape"
+    escape.symlink_to("/etc")
+    monkeypatch.setattr(settings, "QB_CONTAINER_DOWNLOAD_PATH", str(allowed))
+
+    service = SubmissionService(db_session)
+    with pytest.raises(ValueError, match="安全拦截"):
+        await service.create_submission(
+            user_id=1, tmdb_id=1, media_type="movie",
+            source_type="local_mount", resource_url=str(escape / "passwd")
+        )

@@ -81,14 +81,17 @@ class SubmissionService:
                 raise ValueError("无效的磁力链接，未检测到有效 info_hash")
             resource_url = magnet
         elif source_type == "local_mount":
-            res_path = os.path.abspath((resource_url or "").strip())
+            # Canonicalize symlinks before applying the allowlist. abspath() alone can
+            # be bypassed by placing a symlink inside an allowed directory that points
+            # to /etc, /home, etc.
+            res_path = os.path.realpath((resource_url or "").strip())
             allowed_roots = [
-                os.path.abspath(settings.QB_CONTAINER_DOWNLOAD_PATH),
-                os.path.abspath(settings.MEDIA_MOVIES_CONTAINER_PATH),
-                os.path.abspath(settings.MEDIA_TV_CONTAINER_PATH),
-                os.path.abspath("/downloads"),
-                os.path.abspath("/media"),
-                os.path.abspath(tempfile.gettempdir())
+                os.path.realpath(settings.QB_CONTAINER_DOWNLOAD_PATH),
+                os.path.realpath(settings.MEDIA_MOVIES_CONTAINER_PATH),
+                os.path.realpath(settings.MEDIA_TV_CONTAINER_PATH),
+                os.path.realpath("/downloads"),
+                os.path.realpath("/media"),
+                os.path.realpath(tempfile.gettempdir())
             ]
             if not any(res_path == r or res_path.startswith(r + os.sep) for r in allowed_roots):
                 raise ValueError("安全拦截：本地挂载路径必须位于合法的下载或媒体目录内")
