@@ -91,8 +91,11 @@ class SubmissionService:
                 os.path.realpath(settings.MEDIA_TV_CONTAINER_PATH),
                 os.path.realpath("/downloads"),
                 os.path.realpath("/media"),
-                os.path.realpath(tempfile.gettempdir())
             ]
+            # /tmp 仅用于测试和临时直传文件；生产 local_mount 不得借此读取
+            # 其他服务或用户留下的任意临时文件。
+            if settings.APP_ENV != "production":
+                allowed_roots.append(os.path.realpath(tempfile.gettempdir()))
             if not any(res_path == r or res_path.startswith(r + os.sep) for r in allowed_roots):
                 raise ValueError("安全拦截：本地挂载路径必须位于合法的下载或媒体目录内")
             if not os.path.exists(res_path):
