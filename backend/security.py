@@ -23,7 +23,7 @@ def get_password_hash(password: str) -> str:
     )
     salt_b64 = base64.urlsafe_b64encode(salt).decode("ascii").rstrip("=")
     digest_b64 = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-    return f"${PASSWORD_SCHEME}${PASSWORD_ITERATIONS}${salt_b64}${digest_b64}"
+    return f"{PASSWORD_SCHEME}${PASSWORD_ITERATIONS}${salt_b64}${digest_b64}"
 
 
 def _decode_b64(value: str) -> bytes:
