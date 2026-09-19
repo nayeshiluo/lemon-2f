@@ -169,6 +169,14 @@ class QBittorrentClient:
                     f"{self.host}/api/v2/torrents/delete",
                     data={"hashes": torrent_hash.lower(), "deleteFiles": "true" if delete_files else "false"}
                 )
+                if res.status_code == 403:
+                    self.is_logged_in = False
+                    if await self.login():
+                        res = await client.post(
+                            f"{self.host}/api/v2/torrents/delete",
+                            data={"hashes": torrent_hash.lower(), "deleteFiles": "true" if delete_files else "false"},
+                            cookies=self.cookies,
+                        )
                 return res.status_code == 200
         except Exception as e:
             logger.error(f"Failed to delete torrent {torrent_hash}: {e}")
