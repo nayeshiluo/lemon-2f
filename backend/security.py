@@ -33,7 +33,7 @@ def _decode_b64(value: str) -> bytes:
 
 def is_legacy_password_hash(hashed_password: str) -> bool:
     """识别旧版 salt$sha256 格式，供登录成功后无感升级。"""
-    return bool(hashed_password) and not hashed_password.startswith(f"${PASSWORD_SCHEME}$") and hashed_password.count("$") == 1
+    return bool(hashed_password) and not hashed_password.startswith(f"{PASSWORD_SCHEME}$") and hashed_password.count("$") == 1
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
