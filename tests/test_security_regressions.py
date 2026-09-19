@@ -26,7 +26,7 @@ def test_password_hash_is_adaptive_and_verifiable():
 def test_legacy_password_hash_verifies_for_login_upgrade():
     salt = "legacy-salt"
     digest = hashlib.sha256((salt + "old-password").encode("utf-8")).hexdigest()
-    legacy = f"${salt}${digest}"
+    legacy = f"{salt}${digest}"
 
     assert is_legacy_password_hash(legacy)
     assert verify_password("old-password", legacy)
