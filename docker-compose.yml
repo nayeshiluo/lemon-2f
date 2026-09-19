@@ -38,7 +38,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lemon_2f}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-lemon_2f}
       - REDIS_URL=redis://redis:6379/0
       - QB_CONTAINER_DOWNLOAD_PATH=/downloads/lemon_2f
       - MEDIA_MOVIES_CONTAINER_PATH=/media/movies
