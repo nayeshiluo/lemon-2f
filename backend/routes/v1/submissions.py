@@ -148,6 +148,7 @@ async def upload_direct_file(
     max_file_bytes = settings.UPLOAD_MAX_FILE_SIZE_MB * 1024 * 1024
     limiter = get_upload_limiter()
     total_written = 0
+    reserved_bytes = 0
     try:
         with open(saved_path, "wb") as f:
             while chunk := await file.read(1024 * 1024 * 4):  # 4MB chunk
@@ -164,16 +165,23 @@ async def upload_direct_file(
                         status_code=HTTP_413,
                         detail="今日直传累计已超过配额上限，请改用磁力/网盘/挂载通道或联系管理员"
                     )
+                reserved_bytes += len(chunk)
                 f.write(chunk)
     except HTTPException:
+        if reserved_bytes:
+            limiter.refund(str(current_user.id), reserved_bytes)
         if os.path.exists(saved_path):
             os.remove(saved_path)
         raise
     except Exception as e:
+        if reserved_bytes:
+            limiter.refund(str(current_user.id), reserved_bytes)
         if os.path.exists(saved_path):
             os.remove(saved_path)
         raise HTTPException(status_code=500, detail=f"视频上传写入失败: {e}")
     if total_written == 0:
+        if reserved_bytes:
+            limiter.refund(str(current_user.id), reserved_bytes)
         os.remove(saved_path) if os.path.exists(saved_path) else None
         raise HTTPException(status_code=400, detail="上传文件为空")
 
@@ -196,8 +204,13 @@ async def upload_direct_file(
         # 资源冲突/入库失败：清理已落盘文件并退还已预扣的会话额度
         if os.path.exists(saved_path):
             os.remove(saved_path)
-        limiter.refund(str(current_user.id), total_written)
+        limiter.refund(str(current_user.id), reserved_bytes)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except Exception as e:
+        if os.path.exists(saved_path):
+            os.remove(saved_path)
+        limiter.refund(str(current_user.id), reserved_bytes)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"视频入库失败: {e}")
 
 @router.get("/my")
 async def list_my_submissions(
