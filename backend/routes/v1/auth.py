@@ -12,7 +12,12 @@ from backend.schemas import (
     TgBindRedeemRequest, TgBindStatusResponse,
     TokenLoginRequest, TgLoginRequest,
 )
-from backend.security import create_access_token, get_password_hash, verify_password
+from backend.security import (
+    create_access_token,
+    get_password_hash,
+    is_legacy_password_hash,
+    verify_password,
+)
 from backend.clients.emby import EmbyClient, emby_client
 from backend.auth import get_current_user
 from backend.services.tg_auth_service import TgAuthService
@@ -93,6 +98,9 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db), reque
     # 2. 本地密码校验 (开发/管理员)
     if user and user.password_hash and verify_password(password, user.password_hash):
         login_guard.on_success(guard_key)
+        if is_legacy_password_hash(user.password_hash):
+            user.password_hash = get_password_hash(password)
+            await db.commit()
         token = create_access_token(subject=user.id, role=user.role)
         return Token(
             access_token=token,
@@ -302,6 +310,11 @@ async def logout_user_device(
 ):
     """远程下线指定的 Emby 播放设备"""
     emby = EmbyClient()
+    # 先在当前用户自己的会话集合中确认归属，防止猜测 session_id 后越权踢人。
+    sessions = await emby.get_user_sessions(current_user.emby_user_id or "")
+    if not any(s.get("session_id") == session_id for s in sessions):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="设备会话不存在或不属于当前用户")
+
     success = await emby.logout_session(session_id)
     if not success:
         raise HTTPException(status_code=400, detail="下线设备失败或设备已离线")
