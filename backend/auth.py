@@ -28,7 +28,16 @@ async def get_current_user(
             detail="令牌中未包含用户信息"
         )
 
-    stmt = select(User).where(User.id == int(user_id))
+    try:
+        parsed_user_id = int(user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="令牌中的用户标识无效",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    stmt = select(User).where(User.id == parsed_user_id)
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
