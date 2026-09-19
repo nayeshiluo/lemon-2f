@@ -151,6 +151,8 @@ class RedisManager:
         try:
             # 设 60 秒过期，避免 Redis 里堆积陈旧唤醒 token
             await self.client.lpush(self.WAKE_QUEUE_KEY, reason)
+            # Webhook 被重复触发时只需唤醒，不需要无限堆积 token。
+            await self.client.ltrim(self.WAKE_QUEUE_KEY, 0, 99)
             await self.client.expire(self.WAKE_QUEUE_KEY, 60)
             return True
         except Exception as e:
