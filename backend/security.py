@@ -41,7 +41,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
     try:
-        if hashed_password.startswith(f"${PASSWORD_SCHEME}$"):
+        if hashed_password.startswith(f"{PASSWORD_SCHEME}$"):
             scheme, iterations, salt_b64, expected_b64 = hashed_password.split("$", 3)
             if scheme != PASSWORD_SCHEME:
                 return False
