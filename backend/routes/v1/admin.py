@@ -2,7 +2,7 @@ import os
 import shutil
 import logging
 from typing import List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 
@@ -156,8 +156,8 @@ async def adjust_points(
 
 @router.get("/users")
 async def list_admin_users(
-    page: int = 1,
-    page_size: int = 50,
+    page: int = Query(default=1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(default=50, ge=1, le=100, description="每页条数 (1~100)"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
@@ -251,7 +251,7 @@ async def update_admin_points_config(
 
 @router.post("/sync-emby-series")
 async def admin_sync_emby_series(
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=1000, description="最多同步条数 (1~1000)"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
