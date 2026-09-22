@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+import hashlib
 import logging
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,18 +53,34 @@ async def login(req: EmbyLoginRequest, db: AsyncSession = Depends(get_db), reque
 
     # 1. Emby 服务器穿透鉴权
     emby_auth = await emby_client.authenticate_user(username, password)
+    # Emby 的不可变用户 ID 才是身份锚点；绝不能拿可改名的 username 把
+    # 一个先前由 Telegram 建立的账号自动合并进来。
+    # 仅供 Emby 认证失败后的本地密码回退使用；Emby 成功时绝不可使用它合并身份。
     user = await user_repo.get_by_username(username)
 
     if emby_auth:
         login_guard.on_success(guard_key)
         emby_id = emby_auth.get("emby_user_id")
+        if not emby_id:
+            raise HTTPException(status_code=502, detail="Emby 未返回稳定用户标识，拒绝登录以防身份混淆")
+        user = await user_repo.get_by_emby_id(emby_id)
         is_admin = emby_auth.get("is_administrator", False)
         target_role = "admin" if is_admin else "user"
 
         if not user:
+            # 仅在未被其他内部账号占用时沿用 Emby 显示名；发生冲突时改用
+            # 稳定的内部名，Emby 名仍写在 emby_username 中。
+            candidate = username
+            if await user_repo.get_by_username(candidate):
+                identity_suffix = hashlib.sha256(emby_id.encode("utf-8")).hexdigest()[:20]
+                candidate = f"emby_{identity_suffix}"
+                suffix = 1
+                while await user_repo.get_by_username(candidate):
+                    suffix += 1
+                    candidate = f"emby_{identity_suffix}_{suffix}"
             # 关键修复：初始 balance=0，必须严格由 PointsService 入账
             user = User(
-                username=username,
+                username=candidate,
                 emby_user_id=emby_id,
                 emby_username=username,
                 role=target_role,
@@ -258,6 +275,11 @@ async def redeem_tg_bind_code(
     TG 只是它的一个接入端，绝不允许反向由 TG 侧决定归属。
     """
     service = TgBindService(db)
+    if not current_user.emby_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="请先使用 Emby 账号密码登录后再绑定 Telegram，免密 TG 账号不能决定 Emby 身份归属",
+        )
     client_ip = request.client.host if request.client else None
     try:
         user = await service.redeem_code(req.code, current_user, ip_address=client_ip)
@@ -334,4 +356,3 @@ async def reset_password(
         await emby.reset_user_password(current_user.emby_user_id, req.new_password)
     await db.commit()
     return {"success": True, "message": "密码修改成功！新密码已同步生效。"}
-

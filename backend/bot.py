@@ -77,10 +77,24 @@ async def require_bound_user(update: Update) -> Optional[User]:
     return user
 
 
+async def require_private_credential_chat(update: Update) -> bool:
+    """凭据与绑定码只能发送到 Telegram 私聊，避免群聊意外泄露。"""
+    chat = update.effective_chat
+    if chat and chat.type == "private":
+        return True
+    if update.message:
+        await update.message.reply_text(
+            "🔒 为保护登录凭据，请私聊本 Bot 后再使用此命令。群聊不会发送 Token、登录码或绑定码。"
+        )
+    return False
+
+
 async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/link 签发一次性绑定码"""
     tg_user = update.effective_user
     if not update.message or not tg_user:
+        return
+    if not await require_private_credential_chat(update):
         return
 
     async with AsyncSessionLocal() as session:
@@ -136,6 +150,8 @@ async def cmd_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_user = update.effective_user
     if not update.message or not tg_user:
         return
+    if not await require_private_credential_chat(update):
+        return
 
     user = await require_bound_user(update)
     if not user:
@@ -167,6 +183,8 @@ async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/login 签发一次性面板登录验证码（配合 TG ID/@用户名 使用）"""
     tg_user = update.effective_user
     if not update.message or not tg_user:
+        return
+    if not await require_private_credential_chat(update):
         return
 
     user = await require_bound_user(update)
@@ -205,6 +223,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/start 指令（群成员免密自动开通 / 已开通用户欢迎页）"""
     tg_user = update.effective_user
     if not update.message or not tg_user:
+        return
+    if not await require_private_credential_chat(update):
         return
 
     user = await get_bound_user(tg_user.id)
