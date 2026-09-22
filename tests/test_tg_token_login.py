@@ -34,6 +34,8 @@ from backend.services import tg_auth_service
 from backend.services.tg_auth_service import TgAuthService
 from backend.services.tg_bind_service import TgBindService
 from backend.security import create_access_token
+from backend.routes.v1 import auth as auth_routes
+from backend.routes.v1 import admin as admin_routes
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -54,9 +56,10 @@ async def env():
         alice = User(username="alice", emby_user_id="emby-alice", role="user", balance=100)
         bob = User(username="bob", emby_user_id="emby-bob", role="user", balance=50)
         carol = User(username="carol", emby_user_id="emby-carol", role="admin", balance=0)
-        s.add_all([alice, bob, carol])
+        owner = User(username="owner", emby_user_id="emby-owner", role="owner", balance=0)
+        s.add_all([alice, bob, carol, owner])
         await s.commit()
-        alice_id, bob_id, carol_id = alice.id, bob.id, carol.id
+        alice_id, bob_id, carol_id, owner_id = alice.id, bob.id, carol.id, owner.id
 
     async def override_get_db():
         async with factory() as session:
@@ -82,6 +85,7 @@ async def env():
             "alice_token": create_access_token(subject=alice_id, role="user"),
             "bob_token": create_access_token(subject=bob_id, role="user"),
             "admin_token": create_access_token(subject=carol_id, role="admin"),
+            "owner_token": create_access_token(subject=owner_id, role="owner"),
         }
 
     app.dependency_overrides.clear()
@@ -380,12 +384,13 @@ async def test_provision_tg_user_auto_role_from_admin_ids(env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_provision_tg_user_username_collision_suffix(env):
-    """tg_username 与现有 username 冲突时自动追加数字后缀保证唯一"""
-    # env 里已存在 username="alice"（Emby 用户），尽管理论不占但验证兜底逻辑：
+    """TG 可改用户名只作展示；内部用户名固定由数字 TG ID 导出"""
     u1, _, _ = await _provision(env["factory"], TG_ALICE, "alice")
     u2, _, created = await _provision(env["factory"], TG_BOB, "alice")
     assert created is True
-    assert u1.username != u2.username
+    assert u1.username == f"tg_{TG_ALICE}"
+    assert u2.username == f"tg_{TG_BOB}"
+    assert u1.tg_username == u2.tg_username == "alice"
     async with env["factory"]() as s:
         names = (await s.execute(select(User.username))).scalars().all()
         assert len(names) == len(set(names)), "username 必须全局唯一"
@@ -407,7 +412,8 @@ async def test_provision_many_skip_existing(env):
         )
     assert len(report["provisioned"]) == 1
     assert report["provisioned"][0]["tg_user_id"] == TG_BOB
-    assert report["provisioned"][0]["token"]  # 明文仅此一次
+    assert report["provisioned"][0]["token_delivery"] == "not_requested"
+    assert "token" not in report["provisioned"][0]
     assert len(report["skipped"]) == 1
     assert report["skipped"][0]["tg_user_id"] == TG_ALICE
 
@@ -423,7 +429,7 @@ async def test_api_tg_login_flow(env):
     r = await client.post("/api/auth/tg-login", json={"identifier": str(TG_ALICE), "code": code})
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["username"] in ("alice_tg", f"tg{TG_ALICE}")
+    assert data["username"] == f"tg_{TG_ALICE}"
 
     me = await client.get("/api/auth/me", headers=_auth(data["access_token"]))
     assert me.status_code == 200
@@ -466,17 +472,63 @@ async def test_api_admin_tg_sync_group_forbidden_for_user(env):
 
 
 @pytest.mark.asyncio
-async def test_api_admin_tg_sync_group_without_bot_503(env):
+async def test_api_owner_tg_sync_group_without_bot_503(env, monkeypatch):
     """Bot 未运行时同步端点返回 503（Fail-Closed，绝不静默）"""
     from backend import bot as bot_module
     bot_module._bot_app = None
+    monkeypatch.setattr(admin_routes.settings, "TG_ALLOWED_GROUP_IDS", [-100123])
     client = env["client"]
     r = await client.post(
         "/api/admin/tg-sync-group",
         json={"chat_id": -100123},
-        headers=_auth(env["admin_token"]),
+        headers=_auth(env["owner_token"]),
     )
     assert r.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_emby_login_never_merges_into_tg_username_collision(env, monkeypatch):
+    """Emby 认证成功后必须只按不可变 emby_user_id 找账号。"""
+    async with env["factory"]() as s:
+        tg_user, _, _ = await TgAuthService(s).provision_tg_user(TG_ALICE, "moviefan")
+        assert tg_user.username == f"tg_{TG_ALICE}"
+        # 构造遗留库：可改 TG 用户名恰好占用了 Emby 的显示名。
+        tg_user.username = "moviefan"
+        await s.commit()
+
+    async def fake_emby_auth(username, password):
+        assert (username, password) == ("moviefan", "correct")
+        return {"emby_user_id": "stable-emby-moviefan", "is_administrator": False}
+
+    monkeypatch.setattr(auth_routes.emby_client, "authenticate_user", fake_emby_auth)
+    response = await env["client"].post("/api/auth/login", json={"username": "moviefan", "password": "correct"})
+    assert response.status_code == 200, response.text
+
+    async with env["factory"]() as s:
+        legacy_tg = await s.get(User, tg_user.id)
+        users = (await s.execute(select(User).where(User.emby_user_id == "stable-emby-moviefan"))).scalars().all()
+        assert legacy_tg.emby_user_id is None
+        assert len(users) == 1 and users[0].id != legacy_tg.id
+        assert users[0].username.startswith("emby_")
+
+
+def test_sensitive_bot_commands_have_private_chat_guard():
+    """群聊不能触发 /start、/token、/login 或 /link 的凭据回复。"""
+    source = (Path(__file__).resolve().parents[1] / "backend" / "bot.py").read_text(encoding="utf-8")
+    for command in ("cmd_start", "cmd_token", "cmd_login", "cmd_link"):
+        start = source.index(f"async def {command}")
+        next_def = source.find("\nasync def ", start + 1)
+        body = source[start:next_def if next_def != -1 else None]
+        assert "require_private_credential_chat" in body
+
+
+def test_admin_sync_is_owner_only_and_never_returns_tokens():
+    source = (Path(__file__).resolve().parents[1] / "backend" / "routes" / "v1" / "admin.py").read_text(encoding="utf-8")
+    start = source.index("async def admin_tg_sync_group")
+    body = source[start:]
+    assert "Depends(require_owner)" in body
+    assert '"token": raw_token' not in body
+    assert "TG_ALLOWED_GROUP_IDS" in body
 
 
 # ----------------------------------------------------------- 七、/link 历史缺陷回归

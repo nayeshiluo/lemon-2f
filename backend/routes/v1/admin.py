@@ -10,7 +10,7 @@ from backend.database import get_db
 from backend.models.user import User
 from backend.models.task import MediaTask
 from backend.models.submission import Submission
-from backend.auth import require_admin
+from backend.auth import require_admin, require_owner
 from backend.clients.emby import emby_client
 from backend.clients.tmdb import tmdb_client
 from backend.repositories.user_repo import UserRepository
@@ -270,18 +270,20 @@ _TG_MEMBER_STATUSES = ("member", "creator", "administrator")
 async def admin_tg_sync_group(
     req: TgSyncGroupRequest,
     request: Request,
-    admin_user: User = Depends(require_admin),
+    admin_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    管理员：按 TG 群（Emby 群）批量开通二楼账号并签发个人 Token。
+    所有者：按白名单 TG 群批量开通二楼账号。
 
     - 不传 user_ids：同步该群全部管理员（普通 bot 无法枚举全部群成员，
       普通成员请私聊 Bot /start 自助开通，bot 会用 get_chat_member 校验其在群里）；
     - 传 user_ids：仅对"确实在该群里"的成员建档，非成员自动跳过。
 
-    返回每个新开通账号的 Token 明文（仅此一次，落库只有哈希）。
+    新账号 Token 仅由 Bot 私聊给对应用户，HTTP 响应绝不返回凭据。
     """
+    if req.chat_id not in (settings.TG_ALLOWED_GROUP_IDS or []):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="该群不在允许的 Emby 群白名单中")
     from backend.bot import get_bot_app
     bot_app = get_bot_app()
     if not bot_app:
@@ -314,7 +316,20 @@ async def admin_tg_sync_group(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"获取群成员失败：{e}")
 
-    report = await service.provision_many(members, actor=admin_user, ip_address=client_ip)
+    async def deliver_token_privately(tg_user_id: int, raw_token: str) -> None:
+        await bot_app.bot.send_message(
+            chat_id=tg_user_id,
+            text=(
+                "🎟️ 您的二楼面板登录 Token（仅在本私聊发送一次）：\n\n"
+                f"`{raw_token}`\n\n"
+                "请勿转发；需要重新签发时，请私聊 Bot 发送 /token。"
+            ),
+            parse_mode="Markdown",
+        )
+
+    report = await service.provision_many(
+        members, actor=admin_user, ip_address=client_ip, token_delivery=deliver_token_privately
+    )
     return {
         "success": True,
         "chat_id": req.chat_id,

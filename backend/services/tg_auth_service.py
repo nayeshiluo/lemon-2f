@@ -19,7 +19,7 @@ import logging
 import secrets
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any, Awaitable, Callable
 
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -349,8 +349,9 @@ class TgAuthService:
         if user:
             return user, None, False
 
-        # 生成唯一 username：优先 @用户名，冲突或为空则 tg{id} [+ 数字后缀]
-        base = (tg_username or "").strip() or f"tg{tg_user_id}"
+        # 内部用户名绝不采用可随时改名的 Telegram username。展示名单独保存在
+        # tg_username；这样攻击者改名也不可能与 Emby 用户的内部身份合并。
+        base = f"tg_{tg_user_id}"
         username = base
         suffix = 1
         while True:
@@ -362,8 +363,10 @@ class TgAuthService:
 
         # 权限：TG_ADMIN_IDS 名单内的 TG 自动获得管理员/所有者权限
         role = "user"
-        if settings.TG_ADMIN_IDS and tg_user_id in settings.TG_ADMIN_IDS:
-            role = "owner" if tg_user_id == settings.TG_OWNER_ID else "admin"
+        if tg_user_id == settings.TG_OWNER_ID:
+            role = "owner"
+        elif tg_user_id in (settings.TG_ADMIN_IDS or []):
+            role = "admin"
 
         user = User(
             username=username,
@@ -412,8 +415,9 @@ class TgAuthService:
         members: List[Dict[str, Any]],
         actor: User,
         ip_address: Optional[str] = None,
+        token_delivery: Optional[Callable[[int, str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
-        """批量建档（管理员端点使用）。members: [{tg_user_id, tg_username}]"""
+        """批量建档（管理员端点使用）。凭据只能通过可选的私聊回调交付。"""
         report = {"provisioned": [], "skipped": [], "failed": []}
         for m in members:
             tg_id = int(m.get("tg_user_id") or 0)
@@ -427,11 +431,19 @@ class TgAuthService:
                 )
                 if created:
                     assert user is not None
+                    delivery_status = "not_requested"
+                    if raw_token and token_delivery:
+                        try:
+                            await token_delivery(tg_id, raw_token)
+                            delivery_status = "sent_private"
+                        except Exception as e:
+                            logger.warning(f"private token delivery failed for tg#{tg_id}: {e}")
+                            delivery_status = "failed"
                     report["provisioned"].append({
                         "tg_user_id": tg_id,
                         "username": user.username,
                         "role": user.role,
-                        "token": raw_token,  # 管理员可见一次
+                        "token_delivery": delivery_status,
                     })
                 else:
                     report["skipped"].append({"tg_user_id": tg_id, "reason": "已存在账号"})
