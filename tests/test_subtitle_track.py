@@ -10,6 +10,8 @@ from backend.database import Base, get_db
 from backend.models.user import User
 from backend.models.subtitle import SubtitleSubmission
 from backend.security import create_access_token
+from backend.routes.v1 import subtitles as subtitles_routes
+from backend.delivery.adapter import LocalDeliveryAdapter
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -37,13 +39,23 @@ FAKE_TEXT_CONTENT = """这是一个假字幕文件，里面没有任何时间轴
 
 
 @pytest_asyncio.fixture
-async def subtitle_env(tmp_path):
+async def subtitle_env(tmp_path, monkeypatch):
     """构建独立内存库 + 覆盖 get_db 与媒体库路径"""
     engine = create_async_engine(TEST_DB_URL, echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    movies_root = tmp_path / "movies"
+    tv_root = tmp_path / "tv"
+    movies_root.mkdir()
+    tv_root.mkdir()
+    monkeypatch.setattr(
+        subtitles_routes,
+        "LocalDeliveryAdapter",
+        lambda: LocalDeliveryAdapter(movies_root=str(movies_root), tv_root=str(tv_root))
+    )
 
     async with session_factory() as s:
         user = User(username="sub_contributor", balance=50, role="user")
@@ -210,3 +222,147 @@ async def test_subtitles_query_endpoints(subtitle_env):
     t_items = res_target.json()
     assert len(t_items) == 1
     assert t_items[0]["episode"] == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_subtitle_upload_does_not_overwrite_or_reward_twice(subtitle_env):
+    client = subtitle_env["client"]
+    session_factory = subtitle_env["session_factory"]
+    u_id = subtitle_env["user_id"]
+    files = {"file": ("episode.srt", SAMPLE_SRT_CONTENT.encode("utf-8"), "text/plain")}
+    data = {
+        "tmdb_id": 99101, "media_type": "tv", "title": "去重测试剧",
+        "season": 1, "episode": 1, "language": "zh-CN"
+    }
+
+    first = await client.post("/api/subtitles/upload", files=files, data=data)
+    assert first.status_code == 200, first.text
+    original_path = first.json()["dest_path"]
+    with open(original_path, "rb") as saved:
+        original_bytes = saved.read()
+
+    duplicate = await client.post("/api/subtitles/upload", files=files, data=data)
+    assert duplicate.status_code == 409
+    assert "未重复写入或发放奖励" in duplicate.text
+    with open(original_path, "rb") as saved:
+        assert saved.read() == original_bytes
+
+    async with session_factory() as s:
+        user = await s.get(User, u_id)
+        rows = (await s.execute(select(SubtitleSubmission))).scalars().all()
+        assert user.balance == 60
+        assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_oversized_subtitle_is_rejected_before_full_read(subtitle_env, monkeypatch):
+    monkeypatch.setattr(subtitles_routes, "MAX_SUBTITLE_BYTES", 180)
+    payload = ("1\n00:00:01,000 --> 00:00:04,000\n" + "x" * 200).encode("utf-8")
+    res = await subtitle_env["client"].post(
+        "/api/subtitles/upload",
+        files={"file": ("large.srt", payload, "text/plain")},
+        data={"tmdb_id": 99102, "media_type": "movie", "title": "超限测试", "language": "zh-CN"}
+    )
+    assert res.status_code == 400
+    assert "超出 50MB 限制" in res.text
+
+
+@pytest.mark.asyncio
+async def test_stream_reader_stops_at_one_byte_over_configured_limit(monkeypatch):
+    monkeypatch.setattr(subtitles_routes, "MAX_SUBTITLE_BYTES", 10)
+    monkeypatch.setattr(subtitles_routes, "UPLOAD_READ_CHUNK_BYTES", 4)
+
+    class ChunkedUpload:
+        size = None
+
+        def __init__(self, data):
+            self.data = data
+            self.bytes_read = 0
+            self.requested_sizes = []
+
+        async def read(self, size):
+            self.requested_sizes.append(size)
+            chunk = self.data[self.bytes_read:self.bytes_read + size]
+            self.bytes_read += len(chunk)
+            return chunk
+
+    upload = ChunkedUpload(b"x" * 1000)
+    with pytest.raises(ValueError, match="超出 50MB 限制"):
+        await subtitles_routes.read_limited_upload(upload)
+    assert upload.bytes_read == 11
+    assert max(upload.requested_sizes) <= 4
+
+
+@pytest.mark.asyncio
+async def test_existing_track_is_not_replaced_by_different_subtitle(subtitle_env):
+    client = subtitle_env["client"]
+    session_factory = subtitle_env["session_factory"]
+    u_id = subtitle_env["user_id"]
+    data = {"tmdb_id": 99104, "media_type": "movie", "title": "禁止覆盖", "language": "zh-CN"}
+    first_bytes = SAMPLE_SRT_CONTENT.encode("utf-8")
+    first = await client.post(
+        "/api/subtitles/upload", files={"file": ("first.srt", first_bytes, "text/plain")}, data=data
+    )
+    assert first.status_code == 200, first.text
+    path = first.json()["dest_path"]
+
+    changed_bytes = (SAMPLE_SRT_CONTENT + "\n3\n00:00:09,000 --> 00:00:10,000\nnew line\n").encode("utf-8")
+    second = await client.post(
+        "/api/subtitles/upload", files={"file": ("second.srt", changed_bytes, "text/plain")}, data=data
+    )
+    assert second.status_code == 409
+    with open(path, "rb") as saved:
+        assert saved.read() == first_bytes
+
+    async with session_factory() as s:
+        user = await s.get(User, u_id)
+        rows = (await s.execute(select(SubtitleSubmission))).scalars().all()
+        assert user.balance == 60
+        assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_media_mount_fails_closed_without_reward(subtitle_env, monkeypatch):
+    adapter = LocalDeliveryAdapter(
+        movies_root=str(subtitle_env["tmp_path"] / "missing-movies"),
+        tv_root=str(subtitle_env["tmp_path"] / "missing-tv")
+    )
+    monkeypatch.setattr(subtitles_routes, "LocalDeliveryAdapter", lambda: adapter)
+    session_factory = subtitle_env["session_factory"]
+    u_id = subtitle_env["user_id"]
+    res = await subtitle_env["client"].post(
+        "/api/subtitles/upload",
+        files={"file": ("no-mount.srt", SAMPLE_SRT_CONTENT.encode("utf-8"), "text/plain")},
+        data={"tmdb_id": 99105, "media_type": "movie", "title": "挂载失败", "language": "zh-CN"}
+    )
+    assert res.status_code == 503
+    async with session_factory() as s:
+        user = await s.get(User, u_id)
+        rows = (await s.execute(select(SubtitleSubmission))).scalars().all()
+        assert user.balance == 50
+        assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_subtitle_failure_rolls_back_record_points_and_file(subtitle_env, monkeypatch):
+    async def fail_add_points(self, *args, **kwargs):
+        raise RuntimeError("simulated ledger failure")
+
+    monkeypatch.setattr(subtitles_routes.PointsService, "add_points", fail_add_points)
+    session_factory = subtitle_env["session_factory"]
+    u_id = subtitle_env["user_id"]
+    res = await subtitle_env["client"].post(
+        "/api/subtitles/upload",
+        files={"file": ("failure.srt", SAMPLE_SRT_CONTENT.encode("utf-8"), "text/plain")},
+        data={"tmdb_id": 99103, "media_type": "movie", "title": "回滚测试", "language": "zh-CN"}
+    )
+    assert res.status_code == 500
+    assert "未发放奖励" in res.text
+
+    async with session_factory() as s:
+        user = await s.get(User, u_id)
+        rows = (await s.execute(select(SubtitleSubmission))).scalars().all()
+        assert user.balance == 50
+        assert rows == []
+    assert list(subtitle_env["tmp_path"].rglob("*.srt")) == []
+    assert list(subtitle_env["tmp_path"].rglob("*.tmp")) == []
