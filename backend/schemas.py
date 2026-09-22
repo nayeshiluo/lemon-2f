@@ -152,6 +152,10 @@ class SubmissionCreate(BaseModel):
         elif self.source_type in ["local_mount", "pan_share"]:
             if not self.resource_url or not self.resource_url.strip():
                 raise ValueError(f"{'本地挂载模式' if self.source_type == 'local_mount' else '网盘分享模式'}必须提供有效的资源路径或分享链接")
+        elif self.source_type == "direct_upload":
+            # 直传必须走 multipart 上传端点。通用 JSON 投稿端点若允许传入
+            # 任意 resource_url，攻击者便可诱使后台读取服务器上的既有文件。
+            raise ValueError("直传文件只能通过 /api/submissions/upload-file 上传，不接受服务器路径")
         return self
 
 class SubmissionItemResponse(BaseModel):
@@ -327,4 +331,3 @@ class SubtitleResponse(BaseModel):
     status: str
     reward_points: int
     created_at: datetime
-
