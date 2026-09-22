@@ -89,6 +89,72 @@ async def require_private_credential_chat(update: Update) -> bool:
     return False
 
 
+def _telegram_operation_key(update: Update) -> str:
+    """Telegram retries preserve update/callback IDs, so use them as stable operation keys."""
+    if update.callback_query:
+        return f"tg_cb_{update.callback_query.id}"
+    return f"tg_upd_{update.update_id}"
+
+
+async def _spin_wheel_once(
+    session, user_id: int, operation_key: str, description: str
+) -> Tuple[LuckyWheelRecord, User, bool]:
+    """Charge and draw exactly once for a Telegram update; replay returns its original prize."""
+    db_user = await session.get(User, user_id)
+    if not db_user or db_user.balance < WHEEL_COST:
+        raise ValueError(f"软妹币余额不足！当前余额 {db_user.balance if db_user else 0} 🪙")
+
+    points_service = PointsService(session)
+    social_repo = SocialRepository(session)
+    idempotency_key = f"wheel_spin_{db_user.id}_{operation_key}"
+    existing = await points_service.ledger_repo.get_by_idempotency_key(idempotency_key)
+    if existing and existing.ref_id:
+        record = await social_repo.get_wheel_record(int(existing.ref_id))
+        if record:
+            return record, db_user, True
+
+    chosen = random.choices(WHEEL_PRIZES, weights=[p["weight"] for p in WHEEL_PRIZES], k=1)[0]
+    prize_code = None
+    if chosen["type"] == "code":
+        prize_code = f"VIP-{secrets.token_hex(4).upper()}-{secrets.token_hex(4).upper()}"
+    record = await social_repo.create_wheel_record(LuckyWheelRecord(
+        user_id=db_user.id,
+        cost_points=WHEEL_COST,
+        prize_name=chosen["name"],
+        prize_type=chosen["type"],
+        prize_points=chosen["points"],
+        prize_code=prize_code,
+    ))
+    debit = await points_service.deduct_points(
+        user_id=db_user.id,
+        amount=WHEEL_COST,
+        event_type="wheel_spin",
+        idempotency_key=idempotency_key,
+        description=description,
+        ref_type="lucky_wheel",
+        ref_id=str(record.id),
+    )
+    if debit and debit.ref_id != str(record.id):
+        await session.delete(record)
+        await session.flush()
+        previous = await social_repo.get_wheel_record(int(debit.ref_id)) if debit.ref_id else None
+        if previous:
+            return previous, db_user, True
+        raise ValueError("抽奖正在结算，请稍后重试")
+
+    if chosen["type"] == "points":
+        await points_service.add_points(
+            user_id=db_user.id,
+            amount=chosen["points"],
+            event_type="wheel_win",
+            idempotency_key=f"wheel_win_{db_user.id}_{operation_key}",
+            description=f"幸运轮盘中奖: {chosen['name']}",
+            ref_type="lucky_wheel",
+            ref_id=str(record.id),
+        )
+    return record, db_user, False
+
+
 async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/link 签发一次性绑定码"""
     tg_user = update.effective_user
@@ -434,61 +500,27 @@ async def cmd_wheel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     async with AsyncSessionLocal() as session:
-        db_user = await session.get(User, user.id)
-        if not db_user or db_user.balance < WHEEL_COST:
-            await update.message.reply_text(f"⚠️ 软妹币余额不足！每次转动轮盘需要 `{WHEEL_COST}` 🪙，当前余额 `{db_user.balance if db_user else 0}` 🪙")
-            return
-
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        points_service = PointsService(session)
-        social_repo = SocialRepository(session)
-
-        # 扣币
-        await points_service.deduct_points(
-            user_id=db_user.id,
-            amount=WHEEL_COST,
-            event_type="wheel_spin",
-            idempotency_key=f"wheel_spin_{db_user.id}_{now_ms}",
-            description=f"Telegram 幸运轮盘抽奖消耗 ({WHEEL_COST}🪙)",
-            ref_type="lucky_wheel"
-        )
-
-        weights = [p["weight"] for p in WHEEL_PRIZES]
-        chosen = random.choices(WHEEL_PRIZES, weights=weights, k=1)[0]
-
-        prize_code = None
-        if chosen["type"] == "code":
-            prize_code = f"VIP-{secrets.token_hex(4).upper()}-{secrets.token_hex(4).upper()}"
-        elif chosen["type"] == "points":
-            await points_service.add_points(
-                user_id=db_user.id,
-                amount=chosen["points"],
-                event_type="wheel_win",
-                idempotency_key=f"wheel_win_{db_user.id}_{now_ms}",
-                description=f"幸运轮盘中奖: {chosen['name']}",
-                ref_type="lucky_wheel"
+        try:
+            rec, db_user, replayed = await _spin_wheel_once(
+                session, user.id, _telegram_operation_key(update),
+                f"Telegram 幸运轮盘抽奖消耗 ({WHEEL_COST}🪙)",
             )
-
-        rec = LuckyWheelRecord(
-            user_id=db_user.id,
-            cost_points=WHEEL_COST,
-            prize_name=chosen["name"],
-            prize_type=chosen["type"],
-            prize_points=chosen["points"],
-            prize_code=prize_code
-        )
-        await social_repo.create_wheel_record(rec)
+        except ValueError as e:
+            await update.message.reply_text(f"⚠️ {e}")
+            return
         await session.commit()
         await session.refresh(db_user)
 
     res_msg = f"🎡 **轮盘飞速旋转中……**\n\n"
-    if chosen["type"] != "none":
-        res_msg += f"🎉 **恭喜抽中：【{chosen['name']}】！**\n"
-        if prize_code:
-            res_msg += f"\n🔑 **卡密直发**：`{prize_code}` (请长按复制)\n"
+    if rec.prize_type != "none":
+        res_msg += f"🎉 **恭喜抽中：【{rec.prize_name}】！**\n"
+        if rec.prize_code:
+            res_msg += f"\n🔑 **卡密直发**：`{rec.prize_code}` (请长按复制)\n"
     else:
         res_msg += f"💨 差一点就中大奖了，再接再厉！\n"
 
+    if replayed:
+        res_msg += "\n🔁 本次为重复投递，已返回原抽奖结果。\n"
     res_msg += f"\n🪙 最新余额：`{db_user.balance}` 软妹币"
     await update.message.reply_text(res_msg, parse_mode="Markdown")
 
@@ -529,39 +561,51 @@ async def cmd_redpacket(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with AsyncSessionLocal() as session:
         db_user = await session.get(User, user.id)
-        if not db_user or db_user.balance < points:
-            await update.message.reply_text(f"⚠️ 软妹币余额不足！当前余额 `{db_user.balance if db_user else 0}` 🪙")
-            return
-
-        now = datetime.now(timezone.utc)
-        now_ms = int(now.timestamp() * 1000)
         points_service = PointsService(session)
         social_repo = SocialRepository(session)
+        operation_key = _telegram_operation_key(update)
+        idempotency_key = f"redpacket_send_{user.id}_{operation_key}"
+        existing = await points_service.ledger_repo.get_by_idempotency_key(idempotency_key)
+        packet = await social_repo.get_packet_by_id(int(existing.ref_id)) if existing and existing.ref_id else None
+        replayed = packet is not None
 
-        # 扣款
-        p_type = "password" if passcode else "random"
-        await points_service.deduct_points(
-            user_id=db_user.id,
-            amount=points,
-            event_type="redpacket_send",
-            idempotency_key=f"tg_rp_send_{db_user.id}_{now_ms}",
-            description=f"Telegram 塞入红包 ({points}🪙/{count}份)",
-            ref_type="red_packet"
-        )
+        if not packet:
+            if not db_user or db_user.balance < points:
+                await update.message.reply_text(f"⚠️ 软妹币余额不足！当前余额 `{db_user.balance if db_user else 0}` 🪙")
+                return
 
-        packet = RedPacket(
-            sender_id=db_user.id,
-            packet_type=p_type,
-            passcode=passcode,
-            title=f"{db_user.username} 的二楼福利红包",
-            total_points=points,
-            remaining_points=points,
-            total_count=count,
-            remaining_count=count,
-            status="active",
-            expires_at=now + timedelta(hours=24)
-        )
-        packet = await social_repo.create_red_packet(packet)
+            now = datetime.now(timezone.utc)
+            p_type = "password" if passcode else "random"
+            packet = await social_repo.create_red_packet(RedPacket(
+                sender_id=db_user.id,
+                packet_type=p_type,
+                passcode=passcode,
+                title=f"{db_user.username} 的二楼福利红包",
+                total_points=points,
+                remaining_points=points,
+                total_count=count,
+                remaining_count=count,
+                status="active",
+                expires_at=now + timedelta(hours=24),
+            ))
+            debit = await points_service.deduct_points(
+                user_id=db_user.id,
+                amount=points,
+                event_type="redpacket_send",
+                idempotency_key=idempotency_key,
+                description=f"Telegram 塞入红包 ({points}🪙/{count}份)",
+                ref_type="red_packet",
+                ref_id=str(packet.id),
+            )
+            if debit and debit.ref_id != str(packet.id):
+                await session.delete(packet)
+                await session.flush()
+                packet = await social_repo.get_packet_by_id(int(debit.ref_id)) if debit.ref_id else None
+                if not packet:
+                    await update.message.reply_text("⚠️ 红包正在结算，请稍后重试")
+                    return
+                replayed = True
+
         await session.commit()
         await session.refresh(packet)
 
@@ -572,6 +616,8 @@ async def cmd_redpacket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎲 类型：{'🔐 口令红包 (口令: ' + passcode + ')' if passcode else '🎲 拼手气随机红包'}\n\n"
         f"快点击下方按钮开抢！"
     )
+    if replayed:
+        card_text += "\n\n🔁 本次为重复投递，未重复扣款，已返回原红包。"
     keyboard = [
         [InlineKeyboardButton("🧧 戳我拆红包！", callback_data=f"btn_claim_rp:{packet.id}")]
     ]
@@ -801,55 +847,22 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data == "btn_wheel":
         async with AsyncSessionLocal() as session:
-            db_user = await session.get(User, user.id)
-            if not db_user or db_user.balance < WHEEL_COST:
-                await query.edit_message_text(f"⚠️ 软妹币余额不足！每次需要 {WHEEL_COST} 🪙，当前只有 {db_user.balance if db_user else 0} 🪙")
-                return
-
-            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-            points_service = PointsService(session)
-            social_repo = SocialRepository(session)
-
-            await points_service.deduct_points(
-                user_id=db_user.id,
-                amount=WHEEL_COST,
-                event_type="wheel_spin",
-                idempotency_key=f"wheel_spin_{db_user.id}_{now_ms}",
-                description=f"Telegram 幸运轮盘抽奖 ({WHEEL_COST}🪙)",
-                ref_type="lucky_wheel"
-            )
-
-            weights = [p["weight"] for p in WHEEL_PRIZES]
-            chosen = random.choices(WHEEL_PRIZES, weights=weights, k=1)[0]
-
-            prize_code = None
-            if chosen["type"] == "code":
-                prize_code = f"VIP-{secrets.token_hex(4).upper()}-{secrets.token_hex(4).upper()}"
-            elif chosen["type"] == "points":
-                await points_service.add_points(
-                    user_id=db_user.id,
-                    amount=chosen["points"],
-                    event_type="wheel_win",
-                    idempotency_key=f"wheel_win_{db_user.id}_{now_ms}",
-                    description=f"幸运轮盘中奖: {chosen['name']}",
-                    ref_type="lucky_wheel"
+            try:
+                rec, db_user, replayed = await _spin_wheel_once(
+                    session, user.id, _telegram_operation_key(update),
+                    f"Telegram 幸运轮盘抽奖 ({WHEEL_COST}🪙)",
                 )
-
-            rec = LuckyWheelRecord(
-                user_id=db_user.id,
-                cost_points=WHEEL_COST,
-                prize_name=chosen["name"],
-                prize_type=chosen["type"],
-                prize_points=chosen["points"],
-                prize_code=prize_code
-            )
-            await social_repo.create_wheel_record(rec)
+            except ValueError as e:
+                await query.edit_message_text(f"⚠️ {e}")
+                return
             await session.commit()
             await session.refresh(db_user)
 
-        res_text = f"🎡 **轮盘转动停在【{chosen['name']}】！**\n\n"
-        if prize_code:
-            res_text += f"🔑 **卡密**：`{prize_code}`\n"
+        res_text = f"🎡 **轮盘转动停在【{rec.prize_name}】！**\n\n"
+        if rec.prize_code:
+            res_text += f"🔑 **卡密**：`{rec.prize_code}`\n"
+        if replayed:
+            res_text += "🔁 本次为重复投递，已返回原抽奖结果。\n"
         res_text += f"🪙 最新余额：`{db_user.balance}` 软妹币"
         await query.edit_message_text(res_text, parse_mode="Markdown")
 
@@ -877,6 +890,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.answer("⚠️ 红包不存在", show_alert=True)
                 return
 
+            previous_claim = await social_repo.get_claim(packet.id, user.id)
+            if previous_claim:
+                await query.answer(f"🔁 已领取过，原结果：{previous_claim.points} 软妹币", show_alert=True)
+                return
+
             if packet.status == "empty" or packet.remaining_count <= 0 or packet.remaining_points <= 0:
                 await query.answer("😭 手慢了，红包已被抢光！", show_alert=True)
                 return
@@ -887,11 +905,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
             if packet.packet_type == "password":
                 await query.answer("🔐 此为口令红包，请在聊天框直接发送口令或前往 Web 端抢！", show_alert=True)
-                return
-
-            already_claimed = await social_repo.has_user_claimed(packet.id, user.id)
-            if already_claimed:
-                await query.answer("⚠️ 您已经领过这个红包啦！", show_alert=True)
                 return
 
             if packet.remaining_count == 1:

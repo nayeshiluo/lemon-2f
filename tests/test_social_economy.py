@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 import httpx
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from backend.main import app
@@ -15,6 +16,10 @@ TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 @pytest_asyncio.fixture
 async def social_env():
     """构建独立内存库 + 覆盖 get_db + 预置三名测试用户"""
+    from backend.routes.v1 import social as social_mod
+    for dep in (social_mod.wheel_rate, social_mod.claim_rate, social_mod.send_packet_rate):
+        dep.dependency.limiter.reset()
+
     engine = create_async_engine(TEST_DB_URL, echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -106,10 +111,11 @@ async def test_send_and_claim_random_red_packet(social_env):
     assert c1_data["remaining_count"] == 1
     assert c1_data["is_empty"] is False
 
-    # 验证 player_one 再次尝试抢 -> 拦截 400
+    # 同一领取请求重试必须返回第一次的结果，不再重复发币
     res_repeat = await c_u1.post(f"/api/social/redpacket/{packet_id}/claim", json={})
-    assert res_repeat.status_code == 400
-    assert "请勿重复领取" in res_repeat.text
+    assert res_repeat.status_code == 200
+    assert res_repeat.json()["got_points"] == p1
+    assert res_repeat.json()["replayed"] is True
 
     # 3. player_two 抢最后一份（应该拿到剩余全部金额）
     res_claim2 = await c_u2.post(f"/api/social/redpacket/{packet_id}/claim", json={})
@@ -176,3 +182,35 @@ async def test_lucky_wheel_spin(social_env):
         assert record is not None
         assert record.user_id == u1_id
         assert record.cost_points == 10
+
+
+@pytest.mark.asyncio
+async def test_social_write_retries_replay_without_second_charge(social_env):
+    """同一 Idempotency-Key 的红包与轮盘重试必须复用首个业务结果。"""
+    c_boss = social_env["c_boss"]
+    c_u1 = social_env["c_u1"]
+    session_factory = social_env["session_factory"]
+    b_id = social_env["b_id"]
+    u1_id = social_env["u1_id"]
+
+    packet_headers = {"Idempotency-Key": "packet-retry-001"}
+    packet_payload = {"packet_type": "equal", "title": "重试红包", "total_points": 100, "total_count": 2}
+    first_packet = await c_boss.post("/api/social/redpacket/send", json=packet_payload, headers=packet_headers)
+    second_packet = await c_boss.post("/api/social/redpacket/send", json=packet_payload, headers=packet_headers)
+    assert first_packet.status_code == second_packet.status_code == 200
+    assert first_packet.json()["packet_id"] == second_packet.json()["packet_id"]
+    assert second_packet.json()["replayed"] is True
+
+    wheel_headers = {"Idempotency-Key": "wheel-retry-001"}
+    first_wheel = await c_u1.post("/api/social/wheel/spin", headers=wheel_headers)
+    second_wheel = await c_u1.post("/api/social/wheel/spin", headers=wheel_headers)
+    assert first_wheel.status_code == second_wheel.status_code == 200
+    assert first_wheel.json()["prize_name"] == second_wheel.json()["prize_name"]
+    assert first_wheel.json()["prize_code"] == second_wheel.json()["prize_code"]
+    assert second_wheel.json()["replayed"] is True
+
+    async with session_factory() as s:
+        boss = await s.get(User, b_id)
+        assert boss.balance == 900
+        wheel_count = await s.scalar(select(func.count(LuckyWheelRecord.id)).where(LuckyWheelRecord.user_id == u1_id))
+        assert wheel_count == 1

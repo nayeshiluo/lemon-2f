@@ -1,6 +1,7 @@
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from backend.database import get_db
@@ -25,13 +26,21 @@ def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
         return dt.replace(tzinfo=timezone.utc)
     return dt
 
+
+def _operation_key(value: Optional[str]) -> str:
+    key = (value or "").strip() or uuid.uuid4().hex
+    if len(key) > 64:
+        raise HTTPException(status_code=400, detail="Idempotency-Key 不能超过 64 个字符")
+    return key
+
 router = APIRouter(prefix="/wanted", tags=["Wanted / Bounties"])
 
 @router.post("/", response_model=WantedResponse)
 async def create_wanted_task(
     req: WantedCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    idempotency_header: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """发布求片悬赏 (统一 canonical TMDB identity，真实 Escrow 冻结软妹币，自动建立初始众筹档案)"""
     points_service = PointsService(db)
@@ -53,6 +62,14 @@ async def create_wanted_task(
             )
         target_season = req.season
         target_episode = req.episode
+
+    operation_key = _operation_key(idempotency_header)
+    idempotency_key = f"wanted_escrow_{current_user.id}_{operation_key}"
+    existing = await points_service.ledger_repo.get_by_idempotency_key(idempotency_key)
+    if existing and existing.ref_id:
+        previous = await wanted_repo.get_by_id(int(existing.ref_id))
+        if previous:
+            return previous
 
     wanted = WantedTask(
         creator_id=current_user.id,
@@ -76,9 +93,8 @@ async def create_wanted_task(
     )
 
     # 原子扣减/冻结用户软妹币
-    idempotency_key = f"wanted_escrow_{wanted.id}_{current_user.id}"
     try:
-        await points_service.deduct_points(
+        debit = await points_service.deduct_points(
             user_id=current_user.id,
             amount=req.bounty_points,
             event_type="bounty_lock",
@@ -87,7 +103,7 @@ async def create_wanted_task(
                 f" S{target_season:02d}E{target_episode:02d}" if target_episode is not None else ""
             ),
             ref_type="wanted_task",
-            ref_id=str(wanted.id)
+            ref_id=str(wanted.id),
         )
     except ValueError as e:
         await db.rollback()
@@ -95,6 +111,15 @@ async def create_wanted_task(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+
+    if debit and debit.ref_id != str(wanted.id):
+        await db.delete(wanted)
+        await db.flush()
+        previous = await wanted_repo.get_by_id(int(debit.ref_id)) if debit.ref_id else None
+        if not previous:
+            raise HTTPException(status_code=409, detail="悬赏操作正在结算，请使用相同 Idempotency-Key 重试")
+        await db.commit()
+        return previous
 
     await db.commit()
     await db.refresh(wanted)
@@ -106,7 +131,8 @@ async def crowdfund_wanted_task(
     wanted_id: int,
     req: WantedCrowdfundRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    idempotency_header: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """
     加码众筹催更：
@@ -126,10 +152,24 @@ async def crowdfund_wanted_task(
             detail=f"当前求片处于 [{wanted.status}] 状态，已无法追加众筹"
         )
 
+    operation_key = _operation_key(idempotency_header)
+    idempotency_key = f"wanted_crowdfund_{wanted.id}_{current_user.id}_{operation_key}"
+    # wanted 行锁会把同一悬赏的并发操作串行化；在锁内先检查账本即可确保
+    # 同一请求重试不会新增 backer 记录、也不会再次累加奖池。
+    existing = await points_service.ledger_repo.get_by_idempotency_key(idempotency_key)
+    if existing:
+        await db.refresh(current_user)
+        return {
+            "success": True,
+            "message": f"已返回本次众筹结果，未重复扣款。当前总奖池 {wanted.bounty_points} 🪙",
+            "bounty_points": wanted.bounty_points,
+            "backer_count": wanted.backer_count,
+            "new_balance": current_user.balance,
+            "idempotency_key": operation_key,
+            "replayed": True,
+        }
+
     # 原子扣减当前用户追加的软妹币
-    # 使用包含微秒的确定性幂等键，支持同用户多次追加
-    now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
-    idempotency_key = f"wanted_crowdfund_{wanted.id}_{current_user.id}_{now_ts}"
     try:
         await points_service.deduct_points(
             user_id=current_user.id,
@@ -171,7 +211,9 @@ async def crowdfund_wanted_task(
         "message": f"成功为《{wanted.title}》追加众筹 {req.points} 软妹币！当前总奖池达 {wanted.bounty_points} 🪙",
         "bounty_points": wanted.bounty_points,
         "backer_count": wanted.backer_count,
-        "new_balance": current_user.balance
+        "new_balance": current_user.balance,
+        "idempotency_key": operation_key,
+        "replayed": False,
     }
 
 
