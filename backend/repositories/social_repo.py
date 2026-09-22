@@ -21,12 +21,15 @@ class SocialRepository:
         return res.scalar_one_or_none()
 
     async def has_user_claimed(self, packet_id: int, user_id: int) -> bool:
+        return await self.get_claim(packet_id, user_id) is not None
+
+    async def get_claim(self, packet_id: int, user_id: int) -> Optional[RedPacketClaim]:
         stmt = select(RedPacketClaim).where(
             RedPacketClaim.packet_id == packet_id,
             RedPacketClaim.user_id == user_id
         )
         res = await self.db.execute(stmt)
-        return res.scalar_one_or_none() is not None
+        return res.scalar_one_or_none()
 
     async def create_claim(self, claim: RedPacketClaim) -> RedPacketClaim:
         self.db.add(claim)
@@ -52,6 +55,9 @@ class SocialRepository:
         self.db.add(record)
         await self.db.flush()
         return record
+
+    async def get_wheel_record(self, record_id: int) -> Optional[LuckyWheelRecord]:
+        return await self.db.get(LuckyWheelRecord, record_id)
 
     async def list_recent_wheel_records(self, limit: int = 20) -> List[LuckyWheelRecord]:
         stmt = (

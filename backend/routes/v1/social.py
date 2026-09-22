@@ -1,8 +1,9 @@
 import random
 import secrets
+import uuid
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Header
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +23,31 @@ def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _operation_key(value: Optional[str]) -> str:
+    """Normalize a caller supplied idempotency key without making the UI opt-in only."""
+    key = (value or "").strip() or uuid.uuid4().hex
+    if len(key) > 64:
+        raise HTTPException(status_code=400, detail="Idempotency-Key 不能超过 64 个字符")
+    return key
+
+
+def _wheel_result(record: LuckyWheelRecord, balance: int, operation_key: str, replayed: bool = False) -> Dict[str, Any]:
+    chosen = next((p for p in WHEEL_PRIZES if p["name"] == record.prize_name), None)
+    prize_index = WHEEL_PRIZES.index(chosen) if chosen else -1
+    return {
+        "success": True,
+        "prize_index": prize_index,
+        "prize_name": record.prize_name,
+        "prize_type": record.prize_type,
+        "prize_points": record.prize_points,
+        "prize_code": record.prize_code,
+        "message": f"恭喜抽中：{record.prize_name}！" if record.prize_type != "none" else "差一点就中大奖了，再接再厉！",
+        "new_balance": balance,
+        "idempotency_key": operation_key,
+        "replayed": replayed,
+    }
 
 class SendRedPacketRequest(BaseModel):
     packet_type: str = Field(default="random", pattern="^(random|equal|password)$")
@@ -57,6 +83,7 @@ async def send_red_packet(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _rl: None = send_packet_rate,
+    idempotency_header: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """
     发红包：
@@ -77,21 +104,23 @@ async def send_red_packet(
     now = datetime.now(timezone.utc)
 
     # 原子扣除/冻结发起人软妹币
-    now_ms = int(now.timestamp() * 1000)
-    idempotency_key = f"redpacket_send_{current_user.id}_{now_ms}"
-    try:
-        await points_service.deduct_points(
-            user_id=current_user.id,
-            amount=req.total_points,
-            event_type="redpacket_send",
-            idempotency_key=idempotency_key,
-            description=f"塞入红包: 《{req.title}》({req.total_count}份/共{req.total_points}🪙)",
-            ref_type="red_packet"
-        )
-    except ValueError as e:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+    operation_key = _operation_key(idempotency_header)
+    idempotency_key = f"redpacket_send_{current_user.id}_{operation_key}"
+    existing = await points_service.ledger_repo.get_by_idempotency_key(idempotency_key)
+    if existing and existing.ref_id:
+        packet = await social_repo.get_packet_by_id(int(existing.ref_id))
+        if packet:
+            return {
+                "success": True,
+                "message": "已返回本次已创建的红包，未重复扣款",
+                "packet_id": packet.id,
+                "new_balance": current_user.balance,
+                "idempotency_key": operation_key,
+                "replayed": True,
+            }
 
+    # 先获得业务对象 ID，再将它写入账本 ref_id；若同一操作号并发抵达，
+    # 失败的一侧会删除自己的临时对象并回到已提交的原对象。
     packet = RedPacket(
         sender_id=current_user.id,
         packet_type=req.packet_type,
@@ -105,6 +134,36 @@ async def send_red_packet(
         expires_at=now + timedelta(hours=24)
     )
     packet = await social_repo.create_red_packet(packet)
+    try:
+        debit = await points_service.deduct_points(
+            user_id=current_user.id,
+            amount=req.total_points,
+            event_type="redpacket_send",
+            idempotency_key=idempotency_key,
+            description=f"塞入红包: 《{req.title}》({req.total_count}份/共{req.total_points}🪙)",
+            ref_type="red_packet",
+            ref_id=str(packet.id),
+        )
+    except ValueError as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if debit and debit.ref_id != str(packet.id):
+        await db.delete(packet)
+        await db.flush()
+        packet = await social_repo.get_packet_by_id(int(debit.ref_id)) if debit.ref_id else None
+        if not packet:
+            raise HTTPException(status_code=409, detail="红包操作正在结算，请使用相同 Idempotency-Key 重试")
+        await db.commit()
+        await db.refresh(current_user)
+        return {
+            "success": True,
+            "message": "已返回本次已创建的红包，未重复扣款",
+            "packet_id": packet.id,
+            "new_balance": current_user.balance,
+            "idempotency_key": operation_key,
+            "replayed": True,
+        }
 
     await db.commit()
     await db.refresh(packet)
@@ -114,7 +173,9 @@ async def send_red_packet(
         "success": True,
         "message": f"成功塞入 {req.total_points} 软妹币红包！已广播至全站广场！",
         "packet_id": packet.id,
-        "new_balance": current_user.balance
+        "new_balance": current_user.balance,
+        "idempotency_key": operation_key,
+        "replayed": False,
     }
 
 
@@ -141,6 +202,21 @@ async def claim_red_packet(
     if not packet:
         raise HTTPException(status_code=404, detail="红包不存在")
 
+    # 对同一用户，同一红包的请求天然以 (packet_id, user_id) 为幂等键。
+    # 必须放在“已领完/已过期”判断前，才能让网络重试取回原领取结果。
+    previous_claim = await social_repo.get_claim(packet.id, current_user.id)
+    if previous_claim:
+        await db.refresh(current_user)
+        return {
+            "success": True,
+            "got_points": previous_claim.points,
+            "message": f"您已领取过本红包，返回原结果 {previous_claim.points} 软妹币",
+            "remaining_count": packet.remaining_count,
+            "is_empty": packet.status == "empty",
+            "new_balance": current_user.balance,
+            "replayed": True,
+        }
+
     if packet.status == "empty" or packet.remaining_count <= 0 or packet.remaining_points <= 0:
         raise HTTPException(status_code=400, detail="手慢了，该红包已被全被抢光啦！")
 
@@ -156,11 +232,6 @@ async def claim_red_packet(
         expected = (packet.passcode or "").strip()
         if not secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
             raise HTTPException(status_code=400, detail="口令错误，请输入正确的口令抢红包！")
-
-    # 一人只能领一次
-    already_claimed = await social_repo.has_user_claimed(packet.id, current_user.id)
-    if already_claimed:
-        raise HTTPException(status_code=400, detail="您已经抢过该红包了，请勿重复领取")
 
     # 计算本次分得的软妹币
     if packet.remaining_count == 1:
@@ -211,7 +282,8 @@ async def claim_red_packet(
         "message": f"🎉 恭喜抢得 {got_points} 软妹币！",
         "remaining_count": packet.remaining_count,
         "is_empty": packet.status == "empty",
-        "new_balance": current_user.balance
+        "new_balance": current_user.balance,
+        "replayed": False,
     }
 
 
@@ -245,6 +317,7 @@ async def spin_lucky_wheel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _rl: None = wheel_rate,
+    idempotency_header: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """
     转动赛博幸运轮盘：
@@ -254,35 +327,59 @@ async def spin_lucky_wheel(
     """
     points_service = PointsService(db)
     social_repo = SocialRepository(db)
-    now = datetime.now(timezone.utc)
+    operation_key = _operation_key(idempotency_header)
+    idempotency_key = f"wheel_spin_{current_user.id}_{operation_key}"
+    existing = await points_service.ledger_repo.get_by_idempotency_key(idempotency_key)
+    if existing and existing.ref_id:
+        existing_record = await social_repo.get_wheel_record(int(existing.ref_id))
+        if existing_record:
+            return _wheel_result(existing_record, current_user.balance, operation_key, replayed=True)
+
+    # 先固化抽奖结果。账本扣款以该记录 ID 作为 ref_id，确保重试只会返回
+    # 同一奖品（尤其是一次性卡密），不会再次抽奖或扣币。
+    weights = [p["weight"] for p in WHEEL_PRIZES]
+    chosen = random.choices(WHEEL_PRIZES, weights=weights, k=1)[0]
+    prize_code = None
+    if chosen["type"] == "code":
+        prize_code = f"VIP-{secrets.token_hex(4).upper()}-{secrets.token_hex(4).upper()}"
+    record = LuckyWheelRecord(
+        user_id=current_user.id,
+        cost_points=WHEEL_COST,
+        prize_name=chosen["name"],
+        prize_type=chosen["type"],
+        prize_points=chosen["points"],
+        prize_code=prize_code,
+    )
+    record = await social_repo.create_wheel_record(record)
 
     # 扣减抽奖代币
-    now_ms = int(now.timestamp() * 1000)
-    idempotency_key = f"wheel_spin_{current_user.id}_{now_ms}"
     try:
-        await points_service.deduct_points(
+        debit = await points_service.deduct_points(
             user_id=current_user.id,
             amount=WHEEL_COST,
             event_type="wheel_spin",
             idempotency_key=idempotency_key,
             description=f"赛博幸运轮盘抽奖消耗 ({WHEEL_COST}🪙)",
-            ref_type="lucky_wheel"
+            ref_type="lucky_wheel",
+            ref_id=str(record.id),
         )
     except ValueError as e:
         await db.rollback()
         raise HTTPException(status_code=400, detail=f"软妹币余额不足 (需 {WHEEL_COST} 🪙): {e}")
 
-    # 按权重随机抽取
-    weights = [p["weight"] for p in WHEEL_PRIZES]
-    chosen = random.choices(WHEEL_PRIZES, weights=weights, k=1)[0]
+    if debit and debit.ref_id != str(record.id):
+        await db.delete(record)
+        await db.flush()
+        existing_record = await social_repo.get_wheel_record(int(debit.ref_id)) if debit.ref_id else None
+        if not existing_record:
+            raise HTTPException(status_code=409, detail="抽奖操作正在结算，请使用相同 Idempotency-Key 重试")
+        await db.commit()
+        await db.refresh(current_user)
+        return _wheel_result(existing_record, current_user.balance, operation_key, replayed=True)
 
-    prize_code = None
-    if chosen["type"] == "code":
-        # 模拟生成发货卡密
-        prize_code = f"VIP-{secrets.token_hex(4).upper()}-{secrets.token_hex(4).upper()}"
-    elif chosen["type"] == "points":
+    if chosen["type"] == "points":
         # 中奖软妹币入账
-        win_key = f"wheel_win_{current_user.id}_{now_ms}"
+        win_key = f"wheel_win_{current_user.id}_{operation_key}"
         await points_service.add_points(
             user_id=current_user.id,
             amount=chosen["points"],
@@ -292,32 +389,9 @@ async def spin_lucky_wheel(
             ref_type="lucky_wheel"
         )
 
-    record = LuckyWheelRecord(
-        user_id=current_user.id,
-        cost_points=WHEEL_COST,
-        prize_name=chosen["name"],
-        prize_type=chosen["type"],
-        prize_points=chosen["points"],
-        prize_code=prize_code
-    )
-    await social_repo.create_wheel_record(record)
-
     await db.commit()
     await db.refresh(current_user)
-
-    # 返回中奖奖品索引，方便前端控制转盘停止角度
-    prize_index = WHEEL_PRIZES.index(chosen)
-
-    return {
-        "success": True,
-        "prize_index": prize_index,
-        "prize_name": chosen["name"],
-        "prize_type": chosen["type"],
-        "prize_points": chosen["points"],
-        "prize_code": prize_code,
-        "message": f"恭喜抽中：{chosen['name']}！" if chosen["type"] != "none" else "差一点就中大奖了，再接再厉！",
-        "new_balance": current_user.balance
-    }
+    return _wheel_result(record, current_user.balance, operation_key)
 
 
 @router.get("/wheel/recent")

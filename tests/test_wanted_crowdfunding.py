@@ -140,6 +140,46 @@ async def test_wanted_create_and_crowdfund_flow(crowdfunding_env):
 
 
 @pytest.mark.asyncio
+async def test_wanted_write_retries_do_not_duplicate_escrow_or_crowdfund(crowdfunding_env):
+    """同一操作号重试不应多建悬赏、重复冻结或额外增加众筹记录。"""
+    c_client = crowdfunding_env["c_client"]
+    b_client = crowdfunding_env["b_client"]
+    session_factory = crowdfunding_env["session_factory"]
+    c_id = crowdfunding_env["c_id"]
+    b_id = crowdfunding_env["b_id"]
+    payload = {
+        "tmdb_id": 99911,
+        "media_type": "movie",
+        "title": "幂等悬赏",
+        "bounty_points": 50,
+    }
+
+    create_headers = {"Idempotency-Key": "wanted-create-retry-001"}
+    first = await c_client.post("/api/wanted/", json=payload, headers=create_headers)
+    second = await c_client.post("/api/wanted/", json=payload, headers=create_headers)
+    assert first.status_code == second.status_code == 200
+    wanted_id = first.json()["id"]
+    assert second.json()["id"] == wanted_id
+
+    fund_headers = {"Idempotency-Key": "wanted-fund-retry-001"}
+    fund_one = await b_client.post(f"/api/wanted/{wanted_id}/crowdfund", json={"points": 100}, headers=fund_headers)
+    fund_two = await b_client.post(f"/api/wanted/{wanted_id}/crowdfund", json={"points": 100}, headers=fund_headers)
+    assert fund_one.status_code == fund_two.status_code == 200
+    assert fund_one.json()["bounty_points"] == fund_two.json()["bounty_points"] == 150
+    assert fund_two.json()["replayed"] is True
+
+    async with session_factory() as s:
+        creator = await s.get(User, c_id)
+        backer = await s.get(User, b_id)
+        wanted = await s.get(WantedTask, wanted_id)
+        assert creator.balance == 450
+        assert backer.balance == 400
+        assert wanted.bounty_points == 150
+        backers = (await s.execute(select(WantedBacker).where(WantedBacker.wanted_id == wanted_id))).scalars().all()
+        assert len(backers) == 2
+
+
+@pytest.mark.asyncio
 async def test_wanted_claim_and_exclusive_protection(crowdfunding_env):
     """验证：认领独占保护期、冲突拦截、续期与主动放弃"""
     c_client = crowdfunding_env["c_client"]

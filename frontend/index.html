@@ -2096,6 +2096,21 @@
           return token ? { 'Authorization': `Bearer ${token}` } : {}
         }
 
+        // 经济写操作在网络断开时会复用同一个操作号；服务端据此返回原结果，
+        // 而不是再次扣币/抽奖。成功或明确的 4xx 拒绝后再释放该操作号。
+        const pendingEconomicOperation = (scope) => {
+          const storageKey = `lemon_economy_op:${scope}`
+          let key = sessionStorage.getItem(storageKey)
+          if (!key) {
+            key = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
+            sessionStorage.setItem(storageKey, key)
+          }
+          return {
+            key,
+            clear: () => sessionStorage.removeItem(storageKey)
+          }
+        }
+
         const fetchUserProfile = async () => {
           const token = localStorage.getItem('lemon_token')
           if (!token) return
@@ -2635,9 +2650,10 @@
 
           isSendingPacket.value = true
           try {
+            const op = pendingEconomicOperation(`redpacket:${f.packet_type}:${f.title}:${f.total_points}:${f.total_count}:${f.passcode}`)
             const res = await fetch('/api/social/redpacket/send', {
               method: 'POST',
-              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json', 'Idempotency-Key': op.key },
               body: JSON.stringify({
                 packet_type: f.packet_type,
                 passcode: f.passcode.trim(),
@@ -2648,11 +2664,13 @@
             })
             const data = await res.json()
             if (res.ok) {
+              op.clear()
               alert(`🧧 ${data.message}`)
               showSendPacketModal.value = false
               fetchUserProfile()
               loadActiveRedPackets()
             } else {
+              if (res.status < 500) op.clear()
               alert(data.detail || '发红包失败')
             }
           } catch (e) {
@@ -2720,12 +2738,14 @@
           isSpinning.value = true
           lastSpunIndex.value = null
           try {
+            const op = pendingEconomicOperation('wheel')
             const res = await fetch('/api/social/wheel/spin', {
               method: 'POST',
-              headers: getAuthHeaders()
+              headers: { ...getAuthHeaders(), 'Idempotency-Key': op.key }
             })
             const data = await res.json()
             if (res.ok) {
+              op.clear()
               lastSpunIndex.value = data.prize_index
               let msg = `🎡 轮盘停留在【${data.prize_name}】！\n\n${data.message}`
               if (data.prize_code) {
@@ -2735,6 +2755,7 @@
               fetchUserProfile()
               loadWheelWinners()
             } else {
+              if (res.status < 500) op.clear()
               alert(data.detail || '抽奖失败')
             }
           } catch (e) {
@@ -2877,18 +2898,21 @@
               episode: f.media_type === 'movie' ? null : Number(f.episode),
               bounty_points: Number(f.bounty_points)
             }
+            const op = pendingEconomicOperation(`wanted:${payload.tmdb_id}:${payload.media_type}:${payload.season}:${payload.episode}:${payload.bounty_points}`)
             const res = await fetch('/api/wanted/', {
               method: 'POST',
-              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json', 'Idempotency-Key': op.key },
               body: JSON.stringify(payload)
             })
             const data = await res.json()
             if (res.ok) {
+              op.clear()
               alert(`🎉 成功发起《${f.title}》求片悬赏！冻结 ${f.bounty_points} 软妹币押金。`)
               showCreateWantedModal.value = false
               fetchUserProfile()
               loadWantedList()
             } else {
+              if (res.status < 500) op.clear()
               alert(data.detail || '发起求片失败')
             }
           } catch (e) {
@@ -2921,18 +2945,21 @@
 
           isCrowdfunding.value = true
           try {
+            const op = pendingEconomicOperation(`crowdfund:${crowdfundTarget.value.id}:${crowdfundPoints.value}`)
             const res = await fetch(`/api/wanted/${crowdfundTarget.value.id}/crowdfund`, {
               method: 'POST',
-              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+              headers: { ...getAuthHeaders(), 'Content-Type': 'application/json', 'Idempotency-Key': op.key },
               body: JSON.stringify({ points: crowdfundPoints.value })
             })
             const data = await res.json()
             if (res.ok) {
+              op.clear()
               alert(`🎉 ${data.message}`)
               showCrowdfundModal.value = false
               fetchUserProfile()
               loadWantedList()
             } else {
+              if (res.status < 500) op.clear()
               alert(data.detail || '追加众筹失败')
             }
           } catch (e) {
