@@ -2,6 +2,7 @@ import pytest
 import pytest_asyncio
 import httpx
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy import select
 
 from backend.main import app
 from backend.database import Base, get_db
@@ -55,13 +56,13 @@ async def watch_env():
 
 
 @pytest.mark.asyncio
-async def test_watch_playback_and_daily_reward_threshold(watch_env):
-    """验证：观影时长累加 -> 满 30 分钟触发打卡发币 -> 当日防重复发放"""
+async def test_client_watch_report_records_footprint_without_reward(watch_env):
+    """客户端可同步足迹，但不能用自报时长或日期领取积分。"""
     client = watch_env["client"]
     session_factory = watch_env["session_factory"]
     u_id = watch_env["user_id"]
 
-    # 1. 第一次观影：1000 秒 (约 16 分钟，未达到 1800 秒阈值)
+    # 历史日期和客户端自报时长只形成足迹，不触发奖励。
     res1 = await client.post("/api/watch/playback", json={
         "title": "遮天",
         "media_type": "tv",
@@ -77,7 +78,7 @@ async def test_watch_playback_and_daily_reward_threshold(watch_env):
     assert data1["reward_granted"] is False
     assert data1["balance"] == 100
 
-    # 2. 第二次观影：又看 1000 秒 (累计 2000 秒 > 1800 秒，自动触发打卡发币 5 🪙)
+    # 自报累计时长超过旧阈值仍不能触发奖励。
     res2 = await client.post("/api/watch/playback", json={
         "title": "遮天",
         "media_type": "tv",
@@ -90,16 +91,20 @@ async def test_watch_playback_and_daily_reward_threshold(watch_env):
     assert res2.status_code == 200
     data2 = res2.json()
     assert data2["daily_total_seconds"] == 2000
-    assert data2["reward_granted"] is True
-    assert "打卡奖励 +5" in data2["message"]
-    assert data2["balance"] == 105
+    assert data2["reward_granted"] is False
+    assert "不参与积分奖励" in data2["message"]
+    assert data2["balance"] == 100
 
     # 验证数据库中用户余额与打卡记录
     async with session_factory() as s:
         u = await s.get(User, u_id)
-        assert u.balance == 105
+        assert u.balance == 100
+        assert await s.scalar(select(DailyWatchReward).where(
+            DailyWatchReward.user_id == u_id,
+            DailyWatchReward.reward_date == "2026-09-05"
+        )) is None
 
-    # 3. 第三次观影：又看 500 秒 (累计 2500 秒)，不重复发币
+    # 第三条足迹仍正常记录，但不产生奖励。
     res3 = await client.post("/api/watch/playback", json={
         "title": "阿凡达",
         "media_type": "movie",
@@ -109,7 +114,7 @@ async def test_watch_playback_and_daily_reward_threshold(watch_env):
     assert res3.status_code == 200
     data3 = res3.json()
     assert data3["reward_granted"] is False
-    assert data3["balance"] == 105
+    assert data3["balance"] == 100
 
 
 @pytest.mark.asyncio

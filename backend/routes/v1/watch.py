@@ -10,12 +10,10 @@ from backend.models.user import User
 from backend.models.watch import WatchRecord
 from backend.auth import get_current_user
 from backend.repositories.watch_repo import WatchRepository
-from backend.services.points_service import PointsService
 
 router = APIRouter(prefix="/watch", tags=["Watch Footprint & Calendar"])
 
 DAILY_WATCH_REWARD_SECONDS = 1800 # 每日满 30 分钟打卡领币
-DAILY_WATCH_REWARD_POINTS = 5 # 奖励 5 软妹币
 
 class PlaybackRecordRequest(BaseModel):
     item_id: Optional[str] = None
@@ -40,7 +38,7 @@ async def record_playback(
     """
     记录一次观影足迹：
     - 记录影片、季集、设备与播放时长；
-    - 当天观影累计达到 30 分钟自动完成【每日观影打卡】，赠送 5 软妹币！
+    - 此接口接收客户端自报数据，只记录足迹；客户端自报时长/日期不作为积分奖励依据。
     """
     now = datetime.now(timezone.utc)
     today_str = req.watched_date or now.strftime("%Y-%m-%d")
@@ -66,27 +64,6 @@ async def record_playback(
     # 统计当日累计观影时长
     daily_total = await watch_repo.get_daily_seconds(current_user.id, today_str)
 
-    reward_granted = False
-    reward_msg = ""
-    # 达到 30 分钟阈值且未领取
-    if daily_total >= DAILY_WATCH_REWARD_SECONDS:
-        has_claimed = await watch_repo.has_claimed_daily_reward(current_user.id, today_str)
-        if not has_claimed:
-            await watch_repo.create_daily_reward(current_user.id, today_str, points=DAILY_WATCH_REWARD_POINTS)
-            points_service = PointsService(db)
-            idempotency_key = f"daily_watch_{today_str}_{current_user.id}"
-            await points_service.add_points(
-                user_id=current_user.id,
-                amount=DAILY_WATCH_REWARD_POINTS,
-                event_type="daily_watch_reward",
-                idempotency_key=idempotency_key,
-                description=f"每日观影满30分钟打卡奖励 ({today_str})",
-                ref_type="daily_watch",
-                ref_id=today_str
-            )
-            reward_granted = True
-            reward_msg = f"恭喜！今日观影已满 30 分钟，成功解锁每日观影打卡奖励 +{DAILY_WATCH_REWARD_POINTS} 🪙！"
-
     await db.commit()
     await db.refresh(current_user)
 
@@ -94,8 +71,8 @@ async def record_playback(
         "success": True,
         "record_id": record.id,
         "daily_total_seconds": daily_total,
-        "reward_granted": reward_granted,
-        "message": reward_msg or "观影记录已成功同步到二楼足迹库",
+        "reward_granted": False,
+        "message": "观影足迹已记录；客户端上报的时长和日期不参与积分奖励",
         "balance": current_user.balance
     }
 

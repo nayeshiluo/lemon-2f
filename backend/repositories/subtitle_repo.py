@@ -15,6 +15,19 @@ class SubtitleRepository:
     async def get_by_id(self, sub_id: int) -> Optional[SubtitleSubmission]:
         return await self.db.get(SubtitleSubmission, sub_id)
 
+    async def get_by_dedupe_key(self, dedupe_key: str) -> Optional[SubtitleSubmission]:
+        stmt = select(SubtitleSubmission).where(SubtitleSubmission.dedupe_key == dedupe_key)
+        res = await self.db.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def get_accepted_by_dest_path(self, dest_path: str) -> Optional[SubtitleSubmission]:
+        stmt = select(SubtitleSubmission).where(
+            SubtitleSubmission.dest_path == dest_path,
+            SubtitleSubmission.status == "accepted"
+        )
+        res = await self.db.execute(stmt)
+        return res.scalar_one_or_none()
+
     async def list_recent(
         self,
         user_id: Optional[int] = None,

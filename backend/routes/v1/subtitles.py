@@ -1,8 +1,12 @@
 import os
 import re
+import hashlib
+import json
+import tempfile
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from backend.database import get_db
 from backend.models.user import User
@@ -18,6 +22,30 @@ from backend.config import settings
 router = APIRouter(prefix="/subtitles", tags=["Subtitles"])
 
 SUPPORTED_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt"}
+MAX_SUBTITLE_BYTES = 50 * 1024 * 1024
+UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+SUPPORTED_LANGUAGE_TAG = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
+
+
+async def read_limited_upload(file: UploadFile) -> bytes:
+    """Read at most MAX_SUBTITLE_BYTES + 1, rejecting oversized uploads early."""
+    declared_size = getattr(file, "size", None)
+    if declared_size is not None and declared_size > MAX_SUBTITLE_BYTES:
+        raise ValueError("字幕文件超出 50MB 限制")
+
+    chunks = []
+    total = 0
+    while True:
+        # Read one byte beyond the cap so an unknown-size stream cannot evade the limit.
+        read_size = min(UPLOAD_READ_CHUNK_BYTES, MAX_SUBTITLE_BYTES - total + 1)
+        chunk = await file.read(read_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_SUBTITLE_BYTES:
+            raise ValueError("字幕文件超出 50MB 限制")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 def validate_subtitle_content(content_bytes: bytes, ext: str) -> str:
     """
@@ -26,7 +54,7 @@ def validate_subtitle_content(content_bytes: bytes, ext: str) -> str:
     """
     if len(content_bytes) < 100:
         raise ValueError("字幕文件过小 (少于 100 字节)，疑似空文件或损坏")
-    if len(content_bytes) > 50 * 1024 * 1024:
+    if len(content_bytes) > MAX_SUBTITLE_BYTES:
         raise ValueError("字幕文件超出 50MB 限制")
 
     # 尝试多编码解码
@@ -58,13 +86,13 @@ def validate_subtitle_content(content_bytes: bytes, ext: str) -> str:
 @router.post("/upload", response_model=SubtitleResponse)
 async def upload_subtitle(
     file: UploadFile = File(...),
-    tmdb_id: int = Form(...),
+    tmdb_id: int = Form(..., gt=0, le=2147483647),
     media_type: str = Form("tv"),
-    title: str = Form(...),
+    title: str = Form(..., max_length=255),
     year: Optional[int] = Form(None),
-    season: Optional[int] = Form(None),
-    episode: Optional[int] = Form(None),
-    language: str = Form("zh-CN"),
+    season: Optional[int] = Form(None, ge=0, le=100),
+    episode: Optional[int] = Form(None, ge=1, le=2000),
+    language: str = Form("zh-CN", max_length=32),
     is_default: bool = Form(True),
     is_forced: bool = Form(False),
     current_user: User = Depends(get_current_user),
@@ -99,11 +127,14 @@ async def upload_subtitle(
         )
 
     # 读取内容并质检
-    content_bytes = await file.read()
     try:
+        content_bytes = await read_limited_upload(file)
         decoded_text = validate_subtitle_content(content_bytes, ext)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    if not SUPPORTED_LANGUAGE_TAG.fullmatch(language):
+        raise HTTPException(status_code=400, detail="语言标记格式无效")
 
     # 计算目标交付路径
     adapter = LocalDeliveryAdapter()
@@ -135,20 +166,40 @@ async def upload_subtitle(
 
     # 安全落盘：若媒体挂载点有效则物理保存为 UTF-8
     media_root = adapter.movies_root if canonical_type == "movie" else adapter.tv_root
-    if os.path.isdir(media_root):
-        try:
-            os.makedirs(dest_dir, exist_ok=True)
-            with open(dest_path, "w", encoding="utf-8") as f:
-                f.write(decoded_text)
-        except OSError as e:
-            raise HTTPException(status_code=500, detail=f"保存字幕文件失败: {e}")
+    if not os.path.isdir(media_root):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="媒体库挂载点不可用，字幕未入库、未发放奖励"
+        )
+
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail="无法创建字幕目标目录") from e
+
+    subtitle_repo = SubtitleRepository(db)
+    text_hash = hashlib.sha256(decoded_text.encode("utf-8")).hexdigest()
+    dedupe_payload = json.dumps(
+        [tmdb_id, canonical_type, target_season, target_episode, language.casefold(),
+         bool(is_default), bool(is_forced), ext, text_hash],
+        ensure_ascii=True,
+        separators=(",", ":")
+    ).encode("utf-8")
+    dedupe_key = hashlib.sha256(dedupe_payload).hexdigest()
+
+    existing = await subtitle_repo.get_by_dedupe_key(dedupe_key)
+    if existing:
+        raise HTTPException(status_code=409, detail="相同字幕已入库，本次未重复写入或发放奖励")
+
+    existing_target = await subtitle_repo.get_accepted_by_dest_path(dest_path)
+    if existing_target or os.path.exists(dest_path):
+        raise HTTPException(status_code=409, detail="该字幕轨道已有文件，拒绝覆盖")
 
     # 读取动态积分奖励
     points_service = PointsService(db)
     rules = await points_service.get_points_rules()
     reward_amount = rules.get("SUBTITLE_UPLOAD_REWARD", settings.SUBTITLE_UPLOAD_REWARD)
 
-    subtitle_repo = SubtitleRepository(db)
     sub_record = SubtitleSubmission(
         user_id=current_user.id,
         tmdb_id=tmdb_id,
@@ -163,28 +214,68 @@ async def upload_subtitle(
         file_format=ext.lstrip("."),
         file_size=len(content_bytes),
         dest_path=dest_path,
+        dedupe_key=dedupe_key,
         status="accepted",
         reward_points=reward_amount
     )
-    sub_record = await subtitle_repo.create(sub_record)
+    temp_path = None
+    destination_created = False
+    try:
+        try:
+            sub_record = await subtitle_repo.create(sub_record)
+        except IntegrityError as e:
+            # The unique fingerprint closes the concurrent duplicate-upload race.
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="相同字幕已入库，本次未重复写入或发放奖励") from e
 
-    # 记账与发放软妹币奖励
-    idempotency_key = f"subtitle_reward_{sub_record.id}_{current_user.id}"
-    await points_service.add_points(
-        user_id=current_user.id,
-        amount=reward_amount,
-        event_type="subtitle_reward",
-        idempotency_key=idempotency_key,
-        description=f"外挂字幕贡献奖励: 《{title}》" + (
-            f" S{target_season:02d}E{target_episode:02d}" if target_episode is not None else ""
-        ) + f" [{language}]",
-        ref_type="subtitle_submission",
-        ref_id=str(sub_record.id)
-    )
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=dest_dir, prefix=".subtitle-", suffix=".tmp", delete=False
+        ) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(decoded_text)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.chmod(temp_path, 0o644)
 
-    await db.commit()
-    await db.refresh(sub_record)
-    return sub_record
+        # Hard-link creation is atomic and fails rather than overwriting a concurrent file.
+        try:
+            os.link(temp_path, dest_path)
+        except FileExistsError as e:
+            raise HTTPException(status_code=409, detail="该字幕轨道已有文件，拒绝覆盖") from e
+        destination_created = True
+        os.unlink(temp_path)
+        temp_path = None
+
+        idempotency_key = f"subtitle_reward_{sub_record.id}_{current_user.id}"
+        await points_service.add_points(
+            user_id=current_user.id,
+            amount=reward_amount,
+            event_type="subtitle_reward",
+            idempotency_key=idempotency_key,
+            description=f"外挂字幕贡献奖励: 《{title}》" + (
+                f" S{target_season:02d}E{target_episode:02d}" if target_episode is not None else ""
+            ) + f" [{language}]",
+            ref_type="subtitle_submission",
+            ref_id=str(sub_record.id)
+        )
+
+        await db.commit()
+        await db.refresh(sub_record)
+        return sub_record
+    except HTTPException:
+        await db.rollback()
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+        if destination_created and os.path.exists(dest_path):
+            os.unlink(dest_path)
+        raise
+    except Exception as e:
+        await db.rollback()
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+        if destination_created and os.path.exists(dest_path):
+            os.unlink(dest_path)
+        raise HTTPException(status_code=500, detail="字幕入库失败，未发放奖励") from e
 
 
 @router.get("/list", response_model=List[SubtitleResponse])

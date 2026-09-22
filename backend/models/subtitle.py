@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, ForeignKey, Index, func
+    Column, Integer, String, Boolean, DateTime, ForeignKey, Index, UniqueConstraint, func
 )
 from sqlalchemy.orm import relationship
 from backend.database import Base
@@ -33,6 +33,10 @@ class SubtitleSubmission(Base):
     
     # 目标落盘路径
     dest_path = Column(String(512), nullable=False)
+
+    # SHA-256 fingerprint over normalized target/track metadata and subtitle text.
+    # Nullable so existing rows remain migratable; all new uploads set this value.
+    dedupe_key = Column(String(64), nullable=True)
     
     # 状态: accepted (已入库发放奖励), rejected (质检拒绝), deleted (已下架)
     status = Column(String(32), default="accepted", index=True, nullable=False)
@@ -45,6 +49,10 @@ class SubtitleSubmission(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User")
+
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_subtitle_submissions_dedupe_key"),
+    )
 
 
 Index("idx_subtitles_exact_target", SubtitleSubmission.tmdb_id, SubtitleSubmission.media_type, SubtitleSubmission.season, SubtitleSubmission.episode)
