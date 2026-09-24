@@ -83,3 +83,20 @@ jobs:
           SECRET_KEY: strong-ci-test-secret-key-32chars-minimum-safe
         run: |
           PYTHONPATH=. pytest tests/ -v
+
+      - name: Validate Docker Compose Configuration
+        env:
+          POSTGRES_PASSWORD: ci-compose-password
+        run: |
+          docker compose config --quiet
+
+      - name: Build Backend Container Image
+        run: |
+          docker build -f backend/Dockerfile -t lemon-2f-backend:ci .
+
+      - name: Validate Nginx Configuration
+        run: |
+          docker run --rm \
+            --add-host backend:127.0.0.1 \
+            -v "$PWD/deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+            nginx:alpine nginx -t
