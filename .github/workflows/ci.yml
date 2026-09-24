@@ -88,7 +88,9 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-compose-password
         run: |
+          cp .env.example .env
           docker compose config --quiet
+          rm -f .env
 
       - name: Build Backend Container Image
         run: |
