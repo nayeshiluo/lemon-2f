@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     container_name: lemon_2f_postgres
     restart: unless-stopped
     environment:
@@ -18,7 +18,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: lemon_2f_redis
     restart: unless-stopped
     volumes:
@@ -79,7 +79,7 @@ services:
         condition: service_healthy
 
   frontend:
-    image: nginx:alpine
+    image: nginx:alpine@sha256:1ed1b0e1d7652937d6cbdaf4018c7b6fc009a7dd6c3047351e2eddda745de43f
     container_name: lemon_2f_frontend
     restart: unless-stopped
     volumes:
