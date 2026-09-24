@@ -257,6 +257,63 @@ async def test_api_upload_rejects_non_video_extension(env):
     )
     assert r.status_code == 400
     assert "不支持的文件格式" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_generic_submission_endpoint_refuses_forged_direct_upload_path(env):
+    """JSON 投稿接口不得接受服务器路径伪装成直传文件。"""
+    client = env["client"]
+    r = await client.post(
+        "/api/submissions/",
+        headers=_auth(env["token"]),
+        json={
+            "tmdb_id": 1,
+            "media_type": "movie",
+            "source_type": "direct_upload",
+            "resource_url": "/etc/passwd",
+        },
+    )
+    assert r.status_code == 422
+    assert "直传文件只能通过" in r.text
+
+
+@pytest.mark.asyncio
+async def test_direct_upload_service_refuses_arbitrary_server_file(db_session):
+    """即使内部调用服务，也只能读取受控上传目录里的普通文件。"""
+    from backend.services.submission_service import SubmissionService
+
+    service = SubmissionService(db_session)
+    with pytest.raises(ValueError, match="安全拦截"):
+        await service.create_submission(
+            user_id=1,
+            tmdb_id=1,
+            media_type="movie",
+            source_type="direct_upload",
+            resource_url="/etc/passwd",
+        )
+
+
+@pytest.mark.asyncio
+async def test_local_mount_refuses_directory(db_session, monkeypatch, tmp_path):
+    """本地挂载只允许普通视频文件，目录不能被递归扫描提交。"""
+    from backend.services.submission_service import SubmissionService
+    from backend.config import settings
+
+    allowed = tmp_path / "downloads"
+    allowed.mkdir()
+    monkeypatch.setattr(settings, "QB_CONTAINER_DOWNLOAD_PATH", str(allowed))
+
+    service = SubmissionService(db_session)
+    with pytest.raises(ValueError, match="不是普通文件"):
+        await service.create_submission(
+            user_id=1,
+            tmdb_id=1,
+            media_type="movie",
+            source_type="local_mount",
+            resource_url=str(allowed),
+        )
+
+
 @pytest.mark.asyncio
 async def test_local_mount_rejects_symlink_escape(db_session, monkeypatch, tmp_path):
     """An allowed-directory symlink must not escape to an arbitrary host path."""

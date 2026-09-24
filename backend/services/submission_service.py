@@ -25,6 +25,28 @@ import uuid
 
 logger = logging.getLogger("lemon_2f.submission_service")
 
+
+def _is_within_root(path: str, root: str) -> bool:
+    return path == root or path.startswith(root + os.sep)
+
+
+def _managed_direct_upload_roots() -> list[str]:
+    """Only the upload endpoint may mint direct-upload source paths."""
+    return [
+        os.path.realpath(os.path.join(settings.QB_CONTAINER_DOWNLOAD_PATH, "uploads")),
+        os.path.realpath(os.path.join(tempfile.gettempdir(), "lemon_2f_uploads")),
+    ]
+
+
+def _require_regular_file(path_value: str, allowed_roots: list[str], source_label: str) -> str:
+    """Resolve links before allowlisting and reject directories/devices/special files."""
+    resolved = os.path.realpath((path_value or "").strip())
+    if not any(_is_within_root(resolved, root) for root in allowed_roots):
+        raise ValueError(f"安全拦截：{source_label}必须位于受控目录内")
+    if not os.path.isfile(resolved):
+        raise ValueError(f"{source_label}不存在、不是普通文件或无法访问: {resolved}")
+    return resolved
+
 class SubmissionService:
     """
     统一投稿业务领域服务 (服务端权威 Emby 穿透防重 + 剧集 TaskItem 预抢占锁 + 种子 Hash 规范化物理防重 + 安全重试)
@@ -89,23 +111,18 @@ class SubmissionService:
                 os.path.realpath(settings.QB_CONTAINER_DOWNLOAD_PATH),
                 os.path.realpath(settings.MEDIA_MOVIES_CONTAINER_PATH),
                 os.path.realpath(settings.MEDIA_TV_CONTAINER_PATH),
-                os.path.realpath("/downloads"),
-                os.path.realpath("/media"),
             ]
             # /tmp 仅用于测试和临时直传文件；生产 local_mount 不得借此读取
             # 其他服务或用户留下的任意临时文件。
             if settings.APP_ENV != "production":
                 allowed_roots.append(os.path.realpath(tempfile.gettempdir()))
-            if not any(res_path == r or res_path.startswith(r + os.sep) for r in allowed_roots):
-                raise ValueError("安全拦截：本地挂载路径必须位于合法的下载或媒体目录内")
-            if not os.path.exists(res_path):
-                raise ValueError(f"本地挂载路径不存在或无法访问: {res_path}")
+            res_path = _require_regular_file(res_path, allowed_roots, "本地挂载路径")
             t_hash = "local_" + hashlib.sha1(res_path.encode()).hexdigest()[:34]
             magnet = ""
         elif source_type == "direct_upload":
-            upload_path = (resource_url or "").strip()
-            if not upload_path or not os.path.exists(upload_path):
-                raise ValueError(f"上传文件路径异常: {upload_path}")
+            upload_path = _require_regular_file(
+                resource_url or "", _managed_direct_upload_roots(), "直传文件路径"
+            )
             t_hash = "upload_" + hashlib.sha1(upload_path.encode()).hexdigest()[:33]
             magnet = ""
         elif source_type == "pan_share":
