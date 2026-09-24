@@ -8,9 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 依赖
-COPY backend/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# 使用经过 CI 验证的完整锁定依赖，避免未来重建时解析到不同版本
+COPY backend/requirements.lock.txt /app/requirements.lock.txt
+RUN pip install --no-cache-dir -r requirements.lock.txt \
+    && pip check
 
 # 复制代码
 COPY backend /app/backend
