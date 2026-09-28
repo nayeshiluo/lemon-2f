@@ -332,3 +332,26 @@ async def test_local_mount_rejects_symlink_escape(db_session, monkeypatch, tmp_p
             user_id=1, tmdb_id=1, media_type="movie",
             source_type="local_mount", resource_url=str(escape / "passwd")
         )
+
+@pytest.mark.asyncio
+async def test_reset_password_fails_closed_when_emby_sync_fails(env, monkeypatch):
+    """A failed Emby password update must not change the panel password or report success."""
+    from backend.routes.v1 import auth as auth_routes
+
+    class FailingEmby:
+        async def reset_user_password(self, emby_user_id, new_password):
+            assert emby_user_id == "emby-alice"
+            return False
+
+    monkeypatch.setattr(auth_routes, "EmbyClient", FailingEmby)
+    response = await env["client"].post(
+        "/api/auth/reset-password",
+        headers=_auth(env["token"]),
+        json={"new_password": "new-password-that-must-not-be-applied"},
+    )
+
+    assert response.status_code == 502, response.text
+    async with env["factory"]() as session:
+        user = await session.get(User, env["uid"])
+        assert user.password_hash is None
+

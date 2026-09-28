@@ -282,3 +282,67 @@ async def test_delete_endpoints_http():
     app.dependency_overrides.clear()
     await engine.dispose()
 
+
+@pytest.mark.asyncio
+async def test_concurrent_delete_cas_loser_does_not_lazy_load_after_rollback(db_session: AsyncSession, monkeypatch):
+    """CAS loser returns cached data after rollback instead of triggering MissingGreenlet."""
+    from types import SimpleNamespace
+    from sqlalchemy.sql.dml import Update
+
+    user = User(username="race_delete_user", role="user", balance=100)
+    db_session.add(user)
+    await db_session.flush()
+    sub = Submission(
+        user_id=user.id,
+        tmdb_id=901,
+        media_type="movie",
+        title="并发删除测试",
+        status="pending",
+        magnet_uri="magnet:?xt=urn:btih:dddd000000000000000000000000000000000001",
+        torrent_hash="dddd000000000000000000000000000000000001",
+    )
+    db_session.add(sub)
+    await db_session.commit()
+    user_id, submission_id = user.id, sub.id
+
+    original_execute = db_session.execute
+
+    async def emulate_lost_compare_and_set(statement, *args, **kwargs):
+        if isinstance(statement, Update):
+            return SimpleNamespace(rowcount=0)
+        return await original_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", emulate_lost_compare_and_set)
+    result = await SubmissionService(db_session).delete_submission(
+        submission_id, operator=user, is_admin=True, action="no_deduct"
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "deleted"
+    assert result["points_deducted"] == 0
+    assert result["target_user_id"] == user_id
+
+
+@pytest.mark.asyncio
+async def test_submission_quota_uses_postgres_transaction_lock(db_session: AsyncSession, monkeypatch):
+    """PostgreSQL quota checks take a per-user transaction-scoped advisory lock."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    class FakeBind:
+        dialect = SimpleNamespace(name="postgresql")
+
+    async def record_execute(statement, params=None, **kwargs):
+        calls.append((str(statement), params))
+        return SimpleNamespace()
+
+    monkeypatch.setattr(db_session, "get_bind", lambda: FakeBind())
+    monkeypatch.setattr(db_session, "execute", record_execute)
+    await SubmissionService(db_session)._lock_user_submission_quota(42)
+
+    assert len(calls) == 1
+    assert "pg_advisory_xact_lock" in calls[0][0]
+    assert calls[0][1] == {"lock_namespace": 0x4C324632, "user_id": 42}
+
+
