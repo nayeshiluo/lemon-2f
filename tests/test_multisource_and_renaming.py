@@ -32,53 +32,22 @@ async def db_session():
     await engine.dispose()
 
 @pytest.mark.asyncio
-async def test_pan_share_and_local_mount_creation(db_session: AsyncSession):
+async def test_pan_share_fails_closed_until_transfer_engine_exists(db_session: AsyncSession):
+    """A share URL must not enter QC until the panel has a real transfer executor."""
     user = User(username="source_tester", role="user", balance=100)
     db_session.add(user)
     await db_session.flush()
-
-    task = MediaTask(tmdb_id=123, media_type="movie", title="测试片源", year=2026, status="missing")
-    db_session.add(task)
-    await db_session.flush()
-    db_session.add(TaskItem(task_id=task.id, season=None, episode=None, status="missing"))
-    await db_session.commit()
-
     service = SubmissionService(db_session)
 
-    # 1. 光鸭网盘链接自动识别
-    sub_pan = await service.create_submission(
-        user_id=user.id,
-        tmdb_id=123,
-        media_type="movie",
-        source_type="pan_share",
-        resource_url="https://guangya.com/s/abcdef123",
-        share_code="6688"
-    )
-    assert sub_pan.source_type == "pan_share"
-    assert sub_pan.pan_type == "guangya"
-    assert sub_pan.share_code == "6688"
+    with pytest.raises(ValueError, match="暂不支持网盘分享链接自动入库"):
+        await service.create_submission(
+            user_id=user.id,
+            tmdb_id=123,
+            media_type="movie",
+            source_type="pan_share",
+            resource_url="https://pan.quark.cn/s/qk998877",
+        )
 
-    # 2. 移动云盘自动识别
-    sub_cpmobile = await service.create_submission(
-        user_id=user.id,
-        tmdb_id=123,
-        media_type="movie",
-        source_type="pan_share",
-        resource_url="https://yun.139.com/w/#/detail/123456",
-        share_code="9999"
-    )
-    assert sub_cpmobile.pan_type == "cpmobile"
-
-    # 3. 夸克网盘自动识别
-    sub_quark = await service.create_submission(
-        user_id=user.id,
-        tmdb_id=123,
-        media_type="movie",
-        source_type="pan_share",
-        resource_url="https://pan.quark.cn/s/qk998877",
-        share_code=None
-    )
-    assert sub_quark.pan_type == "quark"
 
 @pytest.mark.asyncio
 async def test_messy_name_force_tmdb_renaming(db_session: AsyncSession):

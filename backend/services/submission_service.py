@@ -142,20 +142,7 @@ class SubmissionService:
             t_hash = "upload_" + hashlib.sha1(upload_path.encode()).hexdigest()[:33]
             magnet = ""
         elif source_type == "pan_share":
-            p_url = (resource_url or "").strip()
-            if not p_url:
-                raise ValueError("网盘分享链接不能为空")
-            if not pan_type:
-                if "guangya" in p_url:
-                    pan_type = "guangya"
-                elif "139.com" in p_url or "10086.cn" in p_url:
-                    pan_type = "cpmobile"
-                elif "quark.cn" in p_url:
-                    pan_type = "quark"
-                else:
-                    pan_type = "other"
-            t_hash = "pan_" + hashlib.sha1(f"{pan_type}:{p_url}".encode()).hexdigest()[:36]
-            magnet = ""
+            raise ValueError("暂不支持网盘分享链接自动入库，请改用磁力链接或本地挂载/直传")
         else:
             raise ValueError(f"不支持的资源接口类型: {source_type}")
 
