@@ -166,7 +166,7 @@ async def test_api_rate_limit_keyed_by_user_not_ip(env, monkeypatch):
 
 # ----------------------------------------------------------- 三、并发预占配额
 @pytest.mark.asyncio
-async def test_submission_concurrency_quota(env, monkeypatch):
+async def test_submission_concurrency_quota(env, monkeypatch, tmp_path):
     """单用户活跃任务达上限后，新投稿被拒"""
     from backend.models.task import MediaTask, TaskItem
     monkeypatch.setattr("backend.config.settings.MAX_ACTIVE_SUBMISSIONS_PER_USER", 3)
@@ -180,20 +180,22 @@ async def test_submission_concurrency_quota(env, monkeypatch):
         await s.commit()
         return task
 
-    # 以 pan_share + movie 方式创建 3 个活跃投稿（不依赖 qB/Emby 网络）
+    # 以测试环境允许的临时 local_mount 文件创建活跃投稿（不依赖 qB/Emby 网络）
     async with env["factory"]() as s:
         service = SubmissionService(s)
         for i in range(3):
             await _precreate_task(s, 1000 + i)
+            source_file = tmp_path / f"source{i}.mkv"
+            source_file.write_bytes(b"test")
             sub = await service.create_submission(
                 user_id=env["uid"],
                 tmdb_id=1000 + i,
                 media_type="movie",
-                source_type="pan_share",
-                resource_url=f"https://guangya.com/s/abc{i}",
+                source_type="local_mount",
+                resource_url=str(source_file),
                 title=f"Test Movie {i}",
             )
-            assert sub.status in ("pending", "accepted", "reserved")
+            assert sub.status in ("inspecting", "pending", "accepted", "reserved")
 
         # 第 4 个：配额检查在 TMDB 刮削之前 → 直接触发配额拒绝
         with pytest.raises(ValueError, match="上限"):
@@ -201,14 +203,14 @@ async def test_submission_concurrency_quota(env, monkeypatch):
                 user_id=env["uid"],
                 tmdb_id=2000,
                 media_type="movie",
-                source_type="pan_share",
-                resource_url="https://guangya.com/s/quota_exceed",
+                source_type="local_mount",
+                resource_url=str(tmp_path / "quota-exceed.mkv"),
                 title="Quota Exceed",
             )
 
 
 @pytest.mark.asyncio
-async def test_submission_quota_only_counts_active(env, monkeypatch):
+async def test_submission_quota_only_counts_active(env, monkeypatch, tmp_path):
     """已完成（accepted/failed）任务不占配额"""
     from backend.models.task import MediaTask, TaskItem
     monkeypatch.setattr("backend.config.settings.MAX_ACTIVE_SUBMISSIONS_PER_USER", 1)
@@ -224,12 +226,14 @@ async def test_submission_quota_only_counts_active(env, monkeypatch):
     async with env["factory"]() as s:
         service = SubmissionService(s)
         await _precreate_task(s, 3333)
+        first_source = tmp_path / "done1.mkv"
+        first_source.write_bytes(b"test")
         sub = await service.create_submission(
             user_id=env["uid"],
             tmdb_id=3333,
             media_type="movie",
-            source_type="pan_share",
-            resource_url="https://guangya.com/s/done1",
+            source_type="local_mount",
+            resource_url=str(first_source),
             title="Done Movie",
         )
         # 模拟任务已完成（非活跃态）
@@ -238,12 +242,14 @@ async def test_submission_quota_only_counts_active(env, monkeypatch):
 
         # 活跃数已回落到 0，可再次投稿
         await _precreate_task(s, 4444)
+        second_source = tmp_path / "done2.mkv"
+        second_source.write_bytes(b"test")
         sub2 = await service.create_submission(
             user_id=env["uid"],
             tmdb_id=4444,
             media_type="movie",
-            source_type="pan_share",
-            resource_url="https://guangya.com/s/done2",
+            source_type="local_mount",
+            resource_url=str(tmp_path / "done2.mkv"),
             title="Next Movie",
         )
         assert sub2 is not None
