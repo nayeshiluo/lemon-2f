@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, func, text
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
@@ -59,6 +59,20 @@ class SubmissionService:
         self.task_service = TaskService(db)
         self.points_service = PointsService(db)
 
+    async def _lock_user_submission_quota(self, user_id: int) -> None:
+        """Serialize quota checks for one user across PostgreSQL workers.
+
+        The transaction-scoped lock is released automatically on commit or rollback.
+        SQLite-based tests intentionally skip this PostgreSQL-specific coordination.
+        """
+        bind = self.db.get_bind()
+        if bind.dialect.name != "postgresql":
+            return
+        await self.db.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_namespace, :user_id)"),
+            {"lock_namespace": 0x4C324632, "user_id": int(user_id)},
+        )
+
     async def create_submission(
         self,
         user_id: int,
@@ -79,6 +93,8 @@ class SubmissionService:
 
         # 0. 并发预占配额：单用户同时活跃任务数上限（防抢坑囤积）
         #    活跃 = pending/reserved/downloading/inspecting/delivering/waiting_emby
+        # PostgreSQL 下先按用户获取事务锁，再读配额，避免并发请求同时通过 count 检查。
+        await self._lock_user_submission_quota(user_id)
         active_statuses_for_quota = [
             "pending", "reserved", "downloading", "inspecting", "delivering", "waiting_emby"
         ]
@@ -126,20 +142,7 @@ class SubmissionService:
             t_hash = "upload_" + hashlib.sha1(upload_path.encode()).hexdigest()[:33]
             magnet = ""
         elif source_type == "pan_share":
-            p_url = (resource_url or "").strip()
-            if not p_url:
-                raise ValueError("网盘分享链接不能为空")
-            if not pan_type:
-                if "guangya" in p_url:
-                    pan_type = "guangya"
-                elif "139.com" in p_url or "10086.cn" in p_url:
-                    pan_type = "cpmobile"
-                elif "quark.cn" in p_url:
-                    pan_type = "quark"
-                else:
-                    pan_type = "other"
-            t_hash = "pan_" + hashlib.sha1(f"{pan_type}:{p_url}".encode()).hexdigest()[:36]
-            magnet = ""
+            raise ValueError("暂不支持网盘分享链接自动入库，请改用磁力链接或本地挂载/直传")
         else:
             raise ValueError(f"不支持的资源接口类型: {source_type}")
 
@@ -340,6 +343,8 @@ class SubmissionService:
 
         if not is_admin and peek.user_id != operator.id:
             raise ValueError("无权删除其他用户的投稿")
+        # rollback 会让 ORM 实例过期；在原子 CAS 前缓存返回值，避免隐式异步加载。
+        target_user_id = peek.user_id
 
         if peek.status == "deleted":
             raise ValueError("该投稿已处于删除状态，请勿重复操作")
@@ -361,7 +366,7 @@ class SubmissionService:
                 "submission_id": submission_id,
                 "status": "deleted",
                 "points_deducted": 0,
-                "target_user_id": peek.user_id,
+                "target_user_id": target_user_id,
                 "message": "该资源已被并发请求处理下架，本次操作幂等跳过"
             }
         await self.db.flush()
