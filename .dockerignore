@@ -1,0 +1,21 @@
+# Keep secrets and local environment files out of Docker build context.
+.env
+.env.*
+
+# Git metadata and local development artifacts.
+.git
+.venv
+venv
+__pycache__
+**/__pycache__/
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Runtime files and host-mounted media are provided at deployment time.
+data/
+downloads/
+media/
+*.db
+*.sqlite
+*.sqlite3

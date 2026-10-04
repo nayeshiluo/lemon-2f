@@ -350,9 +350,16 @@ async def reset_password(
     db: AsyncSession = Depends(get_db)
 ):
     """修改当前账号登录密码与 Emby 播放密码"""
-    current_user.password_hash = get_password_hash(req.new_password)
     if current_user.emby_user_id:
         emby = EmbyClient()
-        await emby.reset_user_password(current_user.emby_user_id, req.new_password)
+        synced = await emby.reset_user_password(current_user.emby_user_id, req.new_password)
+        if not synced:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Emby 密码同步失败，面板密码未修改，请稍后重试",
+            )
+
+    current_user.password_hash = get_password_hash(req.new_password)
     await db.commit()
-    return {"success": True, "message": "密码修改成功！新密码已同步生效。"}
+    message = "密码修改成功！新密码已同步生效。" if current_user.emby_user_id else "密码修改成功！"
+    return {"success": True, "message": message}

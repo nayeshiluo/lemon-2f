@@ -98,6 +98,15 @@ async def test_send_and_claim_random_red_packet(social_env):
     data = res.json()
     packet_id = data["packet_id"]
 
+    # 活跃红包列表要预加载 sender，AsyncSession 中不能依赖隐式懒加载。
+    res_active = await c_u1.get("/api/social/redpacket/active")
+    assert res_active.status_code == 200, res_active.text
+    active_packets = res_active.json()
+    assert any(
+        packet["id"] == packet_id and packet["sender_name"] == "boss_sender"
+        for packet in active_packets
+    )
+
     async with session_factory() as s:
         u_b = await s.get(User, b_id)
         assert u_b.balance == 900 # 扣除 100

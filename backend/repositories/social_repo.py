@@ -2,6 +2,7 @@ from typing import Optional, List, Tuple
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, and_
+from sqlalchemy.orm import selectinload
 from backend.models.social import RedPacket, RedPacketClaim, LuckyWheelRecord
 
 class SocialRepository:
@@ -40,6 +41,7 @@ class SocialRepository:
         now = datetime.now(timezone.utc)
         stmt = (
             select(RedPacket)
+            .options(selectinload(RedPacket.sender))
             .where(
                 RedPacket.status == "active",
                 RedPacket.remaining_count > 0,
